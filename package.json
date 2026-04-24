@@ -1,0 +1,21 @@
+{
+  "name": "receiptflow-server",
+  "version": "1.0.0",
+  "description": "Backend for receipt parsing and Jobber integration",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@google/genai": "^0.3.0",
+    "@supabase/supabase-js": "^2.49.4",
+    "@vercel/blob": "^0.27.0",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "inngest": "^3.0.0",
+    "multer": "^2.1.1"
+  }
+}

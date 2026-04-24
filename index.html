@@ -1,0 +1,1316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ServiceTitan Receipts</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=JetBrains+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f4efe6;
+  --bg-2: #ebe4d6;
+  --ink: #1a1915;
+  --ink-soft: #4a4740;
+  --ink-mute: #8a8579;
+  --line: #d9d1bf;
+  --card: #fbf8f1;
+  --card-2: #ffffff;
+  --accent: #ff5a2b;
+  --accent-soft: #ffe4d6;
+  --mint: #c8e6b2;
+  --butter: #f7d776;
+  --plum: #d4c4e9;
+  --sky: #bfd9e6;
+  --green: #2a7a3e;
+  --green-bg: #dff2e8;
+  --shadow-sm: 0 1px 2px rgba(26,25,21,.04), 0 2px 8px rgba(26,25,21,.04);
+  --shadow-md: 0 4px 12px rgba(26,25,21,.06), 0 12px 32px rgba(26,25,21,.06);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; font-family: 'Manrope', sans-serif; background: var(--bg); color: var(--ink); font-size: 14px; -webkit-font-smoothing: antialiased; }
+body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), transparent 40%), radial-gradient(ellipse at bottom right, rgba(191,217,230,.25), transparent 50%), var(--bg); }
+
+/* ============ LAYOUT ============ */
+.app { display: grid; grid-template-columns: 240px 1fr; height: 100vh; overflow: hidden; }
+
+.content { position: relative; height: 100vh; overflow: hidden; }
+
+.view { display: none; position: absolute; inset: 0; }
+.view.active { display: flex; flex-direction: column; overflow-y: auto; padding: 16px; gap: 16px; }
+.view.triview.active { display: grid; grid-template-columns: 300px 1fr 360px; padding: 0; gap: 0; overflow: hidden; }
+
+/* ============ SIDEBAR ============ */
+.sidebar { background: var(--card); border-right: 1px solid var(--line); padding: 22px 14px; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 22px; }
+.brand-mark { width: 32px; height: 32px; background: var(--ink); border-radius: 10px; display: grid; place-items: center; color: var(--bg); font-family: 'Fraunces', serif; font-weight: 700; font-style: italic; font-size: 18px; }
+.brand-name { font-family: 'Fraunces', serif; font-weight: 500; font-size: 20px; letter-spacing: -.02em; }
+.brand-name em { font-style: italic; color: var(--accent); font-weight: 400; }
+.nav-label { font-family: 'JetBrains Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: var(--ink-mute); padding: 14px 12px 6px; }
+.nav-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px; color: var(--ink-soft); cursor: pointer; font-weight: 500; transition: all .15s; }
+.nav-item:hover { background: var(--bg-2); color: var(--ink); }
+.nav-item.active { background: var(--ink); color: var(--bg); }
+.nav-item svg { width: 18px; height: 18px; stroke-width: 1.5; flex-shrink: 0; }
+.nav-item .count { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; opacity: .7; }
+.nav-item .badge-dot { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.sidebar-footer { margin-top: auto; padding: 16px; background: linear-gradient(135deg,#e8f0fe,#c4d8fc); border-radius: 16px; border: 1px solid #b8cef8; position: relative; overflow: hidden; }
+.sidebar-footer::before { content: ''; position: absolute; top: -20px; right: -20px; width: 70px; height: 70px; background: #4285f4; border-radius: 50%; opacity: .15; }
+.sidebar-footer h4 { font-family: 'Fraunces', serif; font-weight: 500; font-size: 16px; margin-bottom: 4px; position: relative; }
+.sidebar-footer p { font-size: 12px; color: var(--ink-soft); line-height: 1.4; position: relative; }
+.sidebar-footer button { margin-top: 10px; background: var(--ink); color: var(--bg); border: none; padding: 7px 14px; border-radius: 8px; font-family: 'Manrope', sans-serif; font-weight: 600; font-size: 12px; cursor: pointer; position: relative; }
+
+/* ============ DASHBOARD ============ */
+.topbar { display: flex; justify-content: space-between; align-items: flex-end; padding: 4px 2px; }
+.page-title { font-family: 'Fraunces', serif; font-weight: 400; font-size: 38px; letter-spacing: -.03em; line-height: 1; }
+.page-title em { font-style: italic; color: var(--accent); }
+.page-sub { margin-top: 6px; color: var(--ink-mute); font-size: 13px; }
+.topbar-actions { display: flex; gap: 8px; align-items: center; }
+.search-bar { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; display: flex; align-items: center; gap: 8px; width: 220px; }
+.search-bar input { background: transparent; border: none; outline: none; flex: 1; font-family: inherit; font-size: 13px; color: var(--ink); }
+.icon-btn { width: 38px; height: 38px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; display: grid; place-items: center; cursor: pointer; transition: all .15s; }
+.icon-btn:hover { background: var(--bg-2); }
+
+.stats { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
+.stat-card { border-radius: 18px; padding: 18px 20px; position: relative; overflow: hidden; border: 1px solid var(--line); min-height: 130px; display: flex; flex-direction: column; justify-content: space-between; animation: fadeUp .5s cubic-bezier(.22,1,.36,1) backwards; }
+.stat-card.peach { background: #ffd7c0; border-color: #f0b998; }
+.stat-card.butter { background: var(--butter); border-color: #e8c15c; }
+.stat-card.mint { background: var(--mint); border-color: #a8cf8e; }
+.stat-label { font-family: 'JetBrains Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: var(--ink-soft); }
+.stat-value { font-family: 'Fraunces', serif; font-weight: 400; font-size: 42px; line-height: 1; letter-spacing: -.03em; }
+.stat-value .currency { font-size: 22px; vertical-align: super; margin-right: 2px; opacity: .6; }
+.stat-foot { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--ink-soft); }
+.stat-trend { background: rgba(26,25,21,.1); padding: 3px 8px; border-radius: 100px; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500; }
+.stat-trend.up { background: rgba(26,25,21,.8); color: var(--bg); }
+.corner-arc { position: absolute; bottom: -30px; right: -30px; width: 90px; height: 90px; border: 10px solid rgba(255,255,255,.4); border-radius: 50%; }
+
+/* Drop zone */
+.drop-zone { background: var(--card-2); border: 2px dashed var(--line); border-radius: 20px; padding: 56px 40px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; position: relative; transition: all .25s; cursor: pointer; overflow: hidden; min-height: 340px; }
+.drop-zone::before { content: ''; position: absolute; inset: 0; background: radial-gradient(circle at 20% 20%,rgba(255,90,43,.04),transparent 40%), radial-gradient(circle at 80% 80%,rgba(191,217,230,.2),transparent 50%); pointer-events: none; }
+.drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); background: var(--accent-soft); }
+.drop-icon { width: 100px; height: 100px; background: var(--bg); border-radius: 26px; display: grid; place-items: center; margin-bottom: 22px; position: relative; box-shadow: var(--shadow-sm); transform: rotate(-4deg); transition: transform .3s; }
+.drop-zone:hover .drop-icon { transform: rotate(2deg) translateY(-4px); }
+.drop-icon::after { content: ''; position: absolute; top: 8px; left: -10px; width: 30px; height: 40px; background: var(--accent); border-radius: 6px; z-index: -1; transform: rotate(-12deg); opacity: .25; }
+.drop-icon svg { width: 52px; height: 52px; stroke-width: 1.25; color: var(--ink); }
+.drop-title { font-family: 'Fraunces', serif; font-weight: 400; font-size: 34px; letter-spacing: -.03em; line-height: 1.1; margin-bottom: 10px; position: relative; }
+.drop-title em { font-style: italic; color: var(--accent); }
+.drop-sub { color: var(--ink-mute); font-size: 14px; margin-bottom: 24px; position: relative; }
+.drop-actions { display: flex; gap: 10px; position: relative; }
+.drop-meta { margin-top: 18px; display: flex; gap: 18px; font-family: 'JetBrains Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-mute); position: relative; }
+.drop-meta span::before { content: ''; display: inline-block; width: 4px; height: 4px; background: var(--accent); border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.btn-primary { background: var(--ink); color: var(--bg); border: none; padding: 11px 20px; border-radius: 12px; font-family: inherit; font-weight: 600; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: all .15s; }
+.btn-primary:hover { background: var(--accent); }
+.btn-primary:disabled { opacity: .5; cursor: default; background: var(--ink); }
+.btn-ghost { background: transparent; border: 1px solid var(--line); padding: 11px 20px; border-radius: 12px; font-family: inherit; font-weight: 600; font-size: 13px; cursor: pointer; color: var(--ink); display: flex; align-items: center; gap: 8px; transition: all .15s; }
+.btn-ghost:hover { background: var(--bg-2); }
+.upload-queue { display: none; flex-direction: column; gap: 8px; margin-top: 20px; width: 100%; max-width: 520px; }
+.upload-queue.visible { display: flex; }
+.queue-item { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; display: flex; align-items: center; gap: 12px; animation: slideIn .3s ease; }
+.queue-icon { width: 34px; height: 34px; background: var(--accent-soft); color: var(--accent); border-radius: 8px; display: grid; place-items: center; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600; flex-shrink: 0; }
+.queue-info { flex: 1; min-width: 0; }
+.queue-name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue-size { font-size: 11px; color: var(--ink-mute); font-family: 'JetBrains Mono', monospace; }
+.queue-status { font-size: 11px; font-weight: 600; font-family: 'JetBrains Mono', monospace; text-transform: uppercase; letter-spacing: .06em; }
+
+/* Feed section */
+.feed-section { background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 22px 24px; display: flex; flex-direction: column; gap: 14px; }
+.feed-head { display: flex; justify-content: space-between; align-items: center; }
+.feed-title { font-family: 'Fraunces', serif; font-weight: 400; font-size: 20px; letter-spacing: -.02em; }
+.feed-title em { font-style: italic; color: var(--accent); }
+.feed-filter-tabs { display: flex; background: var(--bg-2); border-radius: 8px; padding: 3px; gap: 2px; }
+.feed-tab { padding: 5px 12px; font-size: 12px; font-weight: 600; border-radius: 6px; cursor: pointer; color: var(--ink-mute); transition: all .15s; white-space: nowrap; }
+.feed-tab.active { background: var(--card); color: var(--ink); box-shadow: var(--shadow-sm); }
+.feed-cols { display: grid; grid-template-columns: 42px 1fr 80px 100px 64px; gap: 0 10px; padding: 0 10px 6px; border-bottom: 1px solid var(--line); font-family: 'JetBrains Mono', monospace; font-size: 9px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-mute); align-items: center; }
+.feed-row { display: grid; grid-template-columns: 42px 1fr 80px 100px 64px; gap: 0 10px; padding: 10px; border-radius: 10px; align-items: center; cursor: pointer; transition: background .15s; animation: slideIn .3s ease; }
+.feed-row:hover { background: var(--bg-2); }
+.feed-source-icon { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700; }
+.feed-source-icon.pdf { background: var(--accent-soft); color: var(--accent); }
+.feed-source-icon.img { background: var(--sky); color: #2a5a72; }
+.feed-source-icon.gmail { background: #fce8e6; color: #c5221f; }
+.feed-file { min-width: 0; }
+.feed-file-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.feed-file-date { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--ink-mute); margin-top: 2px; }
+.feed-amount { font-family: 'Fraunces', serif; font-size: 15px; font-weight: 500; text-align: right; }
+.feed-amount.pending { color: var(--ink-mute); font-size: 12px; font-family: 'Manrope', sans-serif; }
+.feed-job { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--ink-soft); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.feed-job.pending { color: var(--ink-mute); }
+.feed-st { display: flex; justify-content: flex-end; }
+.feed-list { display: flex; flex-direction: column; gap: 2px; }
+.st-badge { display: flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 100px; font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; white-space: nowrap; }
+.st-badge.sent { background: var(--green-bg); color: var(--green); }
+.st-badge.pending { background: var(--bg-2); color: var(--ink-mute); }
+.st-badge svg { width: 10px; height: 10px; }
+
+/* ============ TRIVIEW (review + history) ============ */
+.tri-list { border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; background: var(--card); }
+.tri-list-head { padding: 20px 20px 0; flex-shrink: 0; }
+.tri-list-title { font-family: 'Fraunces', serif; font-weight: 400; font-size: 24px; letter-spacing: -.02em; }
+.tri-list-title em { font-style: italic; color: var(--accent); }
+.tri-list-count { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--ink-mute); margin-top: 2px; }
+.tri-list-sub { font-size: 12px; color: var(--ink-mute); margin-top: 4px; padding: 0 20px; flex-shrink: 0; }
+.tri-list-toolbar { padding: 12px 20px; display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; border-bottom: 1px solid var(--line); }
+.tri-search { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; display: flex; align-items: center; gap: 8px; }
+.tri-search input { background: transparent; border: none; outline: none; flex: 1; font-family: inherit; font-size: 12px; color: var(--ink); }
+.tri-search svg { width: 13px; height: 13px; color: var(--ink-mute); flex-shrink: 0; }
+.tri-select { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font-family: inherit; font-size: 12px; color: var(--ink); outline: none; cursor: pointer; width: 100%; }
+.tri-items { flex: 1; overflow-y: auto; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }
+
+/* Receipt list item */
+.rec-item { display: flex; align-items: center; gap: 10px; padding: 10px 10px; border-radius: 10px; cursor: pointer; transition: background .15s; border: 1px solid transparent; }
+.rec-item:hover { background: var(--bg-2); }
+.rec-item.active { background: var(--ink); color: var(--bg); border-color: transparent; }
+.rec-item.active .rec-meta, .rec-item.active .rec-id { color: rgba(244,239,230,.6); }
+.rec-item.active .rec-amount { color: var(--bg); }
+.rec-icon { width: 36px; height: 44px; border-radius: 5px; background: var(--accent-soft); border: 1px solid var(--line); display: grid; place-items: center; flex-shrink: 0; font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700; color: var(--accent); position: relative; overflow: hidden; }
+.rec-icon::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 5px; background: repeating-linear-gradient(-45deg,transparent 0 2px,rgba(255,255,255,.4) 2px 4px); }
+.rec-icon.img-icon { background: var(--sky); color: #2a5a72; border-color: #a0c4d8; }
+.rec-body { flex: 1; min-width: 0; }
+.rec-name { font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rec-id { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--ink-mute); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rec-meta { font-size: 10px; color: var(--ink-mute); margin-top: 2px; }
+.rec-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
+.rec-amount { font-family: 'Fraunces', serif; font-size: 14px; font-weight: 500; }
+.rec-badge { font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; padding: 2px 7px; border-radius: 100px; }
+.rec-badge.ready { background: var(--green-bg); color: var(--green); }
+.rec-badge.saved { background: #e8f0fe; color: #1a5296; }
+.rec-badge.pushed { background: var(--green-bg); color: var(--green); }
+.rec-badge.pending { background: var(--bg-2); color: var(--ink-mute); }
+.rec-badge.in-jobber { background: var(--green-bg); color: var(--green); }
+
+/* Center preview panel */
+.tri-preview { display: flex; flex-direction: column; overflow: hidden; background: #2a2a28; position: relative; }
+.tri-preview-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: #1e1e1c; flex-shrink: 0; border-bottom: 1px solid #3a3a38; }
+.tri-preview-toolbar span { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #888; }
+.tri-preview-toolbar .tp-btn { background: #3a3a38; border: none; border-radius: 6px; width: 28px; height: 28px; display: grid; place-items: center; cursor: pointer; color: #aaa; transition: background .15s; }
+.tri-preview-toolbar .tp-btn:hover { background: #4a4a48; color: #fff; }
+.tri-preview-toolbar .tp-btn svg { width: 14px; height: 14px; }
+.tri-preview-body { flex: 1; overflow: auto; display: flex; align-items: center; justify-content: center; }
+.preview-placeholder { display: flex; flex-direction: column; align-items: center; gap: 12px; color: #555; text-align: center; }
+.preview-placeholder svg { width: 52px; height: 52px; opacity: .4; }
+.preview-placeholder p { font-size: 13px; }
+.preview-img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px; }
+.preview-pdf { width: 100%; height: 100%; border: none; }
+
+/* Right details panel */
+.tri-details { border-left: 1px solid var(--line); display: flex; flex-direction: column; overflow-y: auto; background: var(--card); }
+.tri-details-head { padding: 20px 20px 16px; border-bottom: 1px solid var(--line); flex-shrink: 0; display: flex; justify-content: space-between; align-items: flex-start; }
+.tri-details-title { font-family: 'Fraunces', serif; font-weight: 400; font-size: 20px; letter-spacing: -.02em; }
+.tri-details-actions { display: flex; gap: 6px; }
+.icon-btn-sm { width: 32px; height: 32px; background: transparent; border: 1px solid var(--line); border-radius: 8px; display: grid; place-items: center; cursor: pointer; transition: all .15s; }
+.icon-btn-sm:hover { background: var(--bg-2); }
+.icon-btn-sm.danger:hover { background: #fdecea; border-color: #f5c2be; color: #c0392b; }
+.icon-btn-sm svg { width: 14px; height: 14px; }
+.tri-details-body { padding: 16px 20px; flex: 1; display: flex; flex-direction: column; gap: 16px; }
+
+/* Detail fields */
+.detail-section-label { font-family: 'JetBrains Mono', monospace; font-size: 9px; text-transform: uppercase; letter-spacing: .12em; color: var(--ink-mute); margin-bottom: 8px; }
+.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.detail-field { display: flex; flex-direction: column; gap: 4px; }
+.detail-field.full { grid-column: 1 / -1; }
+.detail-label { font-family: 'JetBrains Mono', monospace; font-size: 9px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-mute); }
+.detail-value { font-size: 13px; font-weight: 600; color: var(--ink); }
+.detail-value.accent { color: var(--accent); font-family: 'Fraunces', serif; font-size: 18px; font-weight: 400; }
+.detail-value.mono { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500; }
+.detail-input { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-family: inherit; font-size: 13px; color: var(--ink); outline: none; transition: border-color .15s; width: 100%; }
+.detail-input:focus { border-color: var(--ink); }
+.detail-divider { height: 1px; background: var(--line); }
+
+/* Line items table */
+.line-items-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.line-items-table th { font-family: 'JetBrains Mono', monospace; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-mute); padding: 0 6px 8px; text-align: left; border-bottom: 1px solid var(--line); }
+.line-items-table th:last-child, .line-items-table td:last-child { text-align: right; }
+.line-items-table td { padding: 7px 6px; border-bottom: 1px solid var(--line); color: var(--ink-soft); vertical-align: top; }
+.line-items-table td:first-child { color: var(--ink); font-weight: 500; }
+.add-line-btn { display: flex; align-items: center; gap: 6px; background: transparent; border: 1px dashed var(--line); border-radius: 8px; padding: 7px 12px; font-family: inherit; font-size: 12px; color: var(--ink-mute); cursor: pointer; width: 100%; justify-content: center; transition: all .15s; margin-top: 4px; }
+.add-line-btn:hover { border-color: var(--ink-mute); color: var(--ink); }
+
+/* Detail actions */
+.detail-actions { display: flex; flex-direction: column; gap: 8px; padding: 16px 20px; border-top: 1px solid var(--line); flex-shrink: 0; }
+.btn-st { background: var(--accent); color: #fff; border: none; padding: 12px 20px; border-radius: 12px; font-family: inherit; font-weight: 700; font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: all .15s; }
+.btn-st:hover { background: #e04a1e; }
+.btn-st:disabled { opacity: .5; cursor: default; background: var(--accent); }
+.btn-save { background: var(--ink); color: var(--bg); border: none; padding: 12px 20px; border-radius: 12px; font-family: inherit; font-weight: 600; font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: all .15s; }
+.btn-save:hover { opacity: .85; }
+.btn-save.saved { background: var(--green-bg); color: var(--green); cursor: default; }
+
+/* Status badge (detail panel) */
+.status-badge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 100px; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+.status-badge.in-jobber, .status-badge.pushed { background: var(--green-bg); color: var(--green); }
+.status-badge.saved { background: #e8f0fe; color: #1a5296; }
+.status-badge.pending { background: var(--bg-2); color: var(--ink-mute); }
+.status-badge svg { width: 10px; height: 10px; }
+
+/* Empty triview state */
+.tri-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: #666; text-align: center; flex: 1; }
+.tri-empty svg { width: 44px; height: 44px; opacity: .25; }
+.tri-empty p { font-size: 13px; color: var(--ink-mute); }
+
+/* ============ GMAIL PAGE ============ */
+.gmail-page { padding: 28px 32px; display: flex; flex-direction: column; gap: 24px; overflow-y: auto; }
+.gmail-page-head { display: flex; justify-content: space-between; align-items: flex-end; }
+.gmail-page-title { font-family: 'Fraunces', serif; font-weight: 400; font-size: 32px; letter-spacing: -.03em; }
+.gmail-page-title em { font-style: italic; color: var(--accent); }
+.gmail-page-sub { font-size: 13px; color: var(--ink-mute); margin-top: 4px; }
+.gmail-page-btns { display: flex; gap: 8px; }
+.gmail-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.gmail-stat { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px 20px; display: flex; align-items: center; gap: 14px; }
+.gmail-stat-num { font-family: 'Fraunces', serif; font-size: 36px; font-weight: 400; line-height: 1; letter-spacing: -.03em; }
+.gmail-stat-num.orange { color: #e67e22; }
+.gmail-stat-num.green { color: var(--green); }
+.gmail-stat-num.red { color: #c0392b; }
+.gmail-stat-label { font-family: 'JetBrains Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-mute); margin-top: 2px; }
+.gmail-table-card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+.gmail-table { width: 100%; border-collapse: collapse; }
+.gmail-table th { font-family: 'JetBrains Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-mute); padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--line); background: var(--bg-2); font-weight: 500; }
+.gmail-table td { padding: 13px 16px; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--ink-soft); }
+.gmail-table tr:last-child td { border-bottom: none; }
+.gmail-table tr:hover td { background: var(--bg-2); }
+.gmail-table td.muted { color: var(--ink-mute); }
+.gmail-status-pill { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 100px; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; }
+.gmail-status-pill.done { background: var(--green-bg); color: var(--green); }
+.gmail-status-pill.pending { background: var(--butter); color: #8a6a00; }
+.gmail-status-pill.failed { background: #fdecea; color: #c0392b; }
+
+/* ============ SHARED ============ */
+.empty-state { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 32px 16px; color: var(--ink-mute); text-align: center; }
+.empty-state svg { opacity: .3; }
+.empty-state p { font-size: 13px; line-height: 1.5; }
+.empty-state p strong { color: var(--ink-soft); font-weight: 600; }
+
+/* ============ LOGIN OVERLAY ============ */
+#loginOverlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: radial-gradient(ellipse at top left, rgba(255,90,43,.08), transparent 40%),
+              radial-gradient(ellipse at bottom right, rgba(191,217,230,.3), transparent 50%),
+              var(--bg);
+  display: flex; align-items: center; justify-content: center;
+}
+.login-card {
+  background: var(--card-2); border: 1px solid var(--line); border-radius: 24px;
+  padding: 44px 40px 36px; width: 100%; max-width: 400px;
+  box-shadow: var(--shadow-md); display: flex; flex-direction: column; gap: 18px;
+  animation: fadeUp .5s cubic-bezier(.22,1,.36,1);
+}
+.login-logo {
+  width: 52px; height: 52px; background: var(--ink); border-radius: 14px;
+  display: grid; place-items: center; margin-bottom: 4px;
+}
+.login-logo svg { width: 28px; height: 28px; color: var(--bg); }
+.login-title { font-family: 'Fraunces', serif; font-weight: 400; font-size: 28px; letter-spacing: -.02em; line-height: 1.1; }
+.login-title em { font-style: italic; color: var(--accent); }
+.login-sub { font-size: 13px; color: var(--ink-mute); margin-top: -8px; }
+.login-field { display: flex; flex-direction: column; gap: 6px; }
+.login-field label { font-family: 'JetBrains Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-mute); }
+.login-input {
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px;
+  padding: 11px 14px; font-family: inherit; font-size: 14px; color: var(--ink);
+  outline: none; transition: border-color .15s; width: 100%;
+}
+.login-input:focus { border-color: var(--ink); }
+.login-btn {
+  background: var(--ink); color: var(--bg); border: none; padding: 13px 20px;
+  border-radius: 12px; font-family: inherit; font-weight: 700; font-size: 14px;
+  cursor: pointer; transition: all .15s; width: 100%; margin-top: 4px;
+}
+.login-btn:hover { background: var(--accent); }
+.login-btn:disabled { opacity: .5; cursor: default; background: var(--ink); }
+.login-error {
+  font-size: 12px; color: #c0392b; background: #fdecea;
+  border-radius: 8px; padding: 10px 12px; display: none;
+}
+.login-error.visible { display: block; }
+
+/* ============ SIDEBAR USER PROFILE ============ */
+.user-profile {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 10px 22px; position: relative;
+}
+.user-avatar-mark {
+  width: 36px; height: 36px; border-radius: 10px; background: var(--ink);
+  color: var(--bg); display: grid; place-items: center; font-weight: 700;
+  font-size: 13px; flex-shrink: 0; letter-spacing: -.01em;
+}
+.user-profile-info { flex: 1; min-width: 0; }
+.user-profile-name { font-weight: 700; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.user-profile-email { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--ink-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.signout-btn {
+  background: transparent; border: 1px solid var(--line); border-radius: 7px;
+  width: 28px; height: 28px; display: grid; place-items: center; cursor: pointer;
+  color: var(--ink-mute); flex-shrink: 0; transition: all .15s;
+}
+.signout-btn:hover { background: var(--bg-2); color: var(--ink); }
+.signout-btn svg { width: 13px; height: 13px; }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 100px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-mute); }
+
+.sidebar { animation: fadeUp .4s cubic-bezier(.22,1,.36,1) backwards; }
+.stat-card:nth-child(1) { animation-delay: .05s; }
+.stat-card:nth-child(2) { animation-delay: .10s; }
+.stat-card:nth-child(3) { animation-delay: .15s; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body>
+
+<!-- ============ LOGIN OVERLAY ============ -->
+<div id="loginOverlay" style="display:none">
+  <div class="login-card">
+    <div class="login-logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg>
+    </div>
+    <div>
+      <div class="login-title">Sign in to <em>continue.</em></div>
+      <div class="login-sub">ServiceTitan Receipts — upload, extract, push.</div>
+    </div>
+    <div class="login-field">
+      <label for="loginEmail">Email</label>
+      <input class="login-input" type="email" id="loginEmail" placeholder="you@company.com" autocomplete="email" />
+    </div>
+    <div class="login-field">
+      <label for="loginPassword">Password</label>
+      <input class="login-input" type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password" />
+    </div>
+    <div class="login-error" id="loginError"></div>
+    <button class="login-btn" id="loginBtn">Sign in</button>
+  </div>
+</div>
+
+<div class="app" id="app" style="display:none">
+
+<!-- ============ SIDEBAR ============ -->
+<aside class="sidebar">
+  <div class="user-profile">
+    <div class="user-avatar-mark" id="sidebarAvatar">—</div>
+    <div class="user-profile-info">
+      <div class="user-profile-name" id="sidebarName">Loading…</div>
+      <div class="user-profile-email" id="sidebarEmail"></div>
+    </div>
+    <button class="signout-btn" onclick="signOut()" title="Sign out">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+    </button>
+  </div>
+
+  <div class="nav-label">Workspace</div>
+
+  <div class="nav-item active" data-view="dashboard">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+    Dashboard
+  </div>
+  <div class="nav-item" data-view="review">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg>
+    Receipts
+    <span class="count" id="navReviewCount"></span>
+  </div>
+  <div class="nav-item" data-view="gmail">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+    Gmail Receipts
+    <span class="badge-dot" id="gmailDot" style="display:none"></span>
+  </div>
+  <div class="nav-item" data-view="history">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+    History
+    <span class="count" id="navHistoryCount"></span>
+  </div>
+  <div class="nav-item" data-view="reports">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 3h18v4H3zM3 10h18v4H3zM3 17h18v4H3z"/></svg>
+    Reports
+  </div>
+
+  <div class="nav-label">System</div>
+
+  <div class="nav-item" data-view="settings">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    Settings
+  </div>
+
+  <div class="sidebar-footer">
+    <h4>ServiceTitan sync</h4>
+    <p>Last synced 4 min ago · <span id="stQueueCount">0</span> POs queued.</p>
+    <button onclick="navigate('review')">View queue →</button>
+  </div>
+</aside>
+
+<!-- ============ CONTENT ============ -->
+<div class="content">
+
+  <!-- VIEW: DASHBOARD -->
+  <div class="view active" id="view-dashboard">
+    <div class="topbar">
+      <div>
+        <div class="page-title">Receipts <em>→ ST.</em></div>
+        <div class="page-sub">Upload a receipt — we extract, match, and push it straight to ServiceTitan.</div>
+      </div>
+      <div class="topbar-actions">
+        <div class="search-bar">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <input placeholder="Search P.O., vendor, job…" />
+        </div>
+        <div class="icon-btn" style="background:var(--ink);color:var(--bg);font-weight:700;font-size:12px" id="topbarAvatar">—</div>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat-card peach">
+        <div class="stat-label">POs Sent to ST</div>
+        <div class="stat-value" id="statSent">0</div>
+        <div class="stat-foot"><span>This month</span><span class="stat-trend up" id="statSentTrend">—</span></div>
+        <div class="corner-arc"></div>
+      </div>
+      <div class="stat-card butter">
+        <div class="stat-label">Total Cost</div>
+        <div class="stat-value"><span class="currency">$</span><span id="statCost">0</span></div>
+        <div class="stat-foot"><span id="statVendors">0 vendors</span><span class="stat-trend">—</span></div>
+        <div class="corner-arc"></div>
+      </div>
+      <div class="stat-card mint">
+        <div class="stat-label">Processed</div>
+        <div class="stat-value" id="statProcessed">0<span style="font-size:20px;color:var(--ink-mute)">/0</span></div>
+        <div class="stat-foot"><span id="statPending">0 awaiting review</span><span class="stat-trend up" id="statPct">—</span></div>
+        <div class="corner-arc"></div>
+      </div>
+    </div>
+
+    <div class="drop-zone" id="dropZone">
+      <div class="drop-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M12 18v-6"/><path d="m9 15 3-3 3 3"/></svg>
+      </div>
+      <h2 class="drop-title">Drop a receipt, <em>we'll handle ST.</em></h2>
+      <p class="drop-sub">PDFs or images · up to 20 at a time · max 15MB each · pushed to ServiceTitan automatically</p>
+      <div class="drop-actions">
+        <button class="btn-primary" id="browseBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>
+          Choose files
+        </button>
+        <button class="btn-ghost" onclick="navigate('gmail')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+          From Gmail
+        </button>
+      </div>
+      <div class="drop-meta"><span>Auto-OCR</span><span>Vendor detection</span><span>ServiceTitan push</span></div>
+      <input type="file" id="fileInput" accept="application/pdf,image/jpeg,image/png,image/webp,image/gif" multiple hidden />
+      <div class="upload-queue" id="queue"></div>
+    </div>
+
+    <div class="feed-section">
+      <div class="feed-head">
+        <div class="feed-title">All <em>receipts</em></div>
+        <div class="feed-filter-tabs">
+          <div class="feed-tab active" data-feed="all">All</div>
+          <div class="feed-tab" data-feed="upload">Uploaded</div>
+          <div class="feed-tab" data-feed="gmail">Gmail</div>
+        </div>
+      </div>
+      <div class="feed-cols">
+        <div></div><div>File / Vendor</div>
+        <div style="text-align:right">Amount</div>
+        <div style="text-align:right">Job / PO</div>
+        <div style="text-align:right">ST</div>
+      </div>
+      <div class="feed-list" id="feedList">
+        <div class="empty-state">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <p>No receipts yet.<br>Upload a file or pull from Gmail.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- VIEW: REVIEW QUEUE -->
+  <div class="view triview" id="view-review">
+    <div class="tri-list">
+      <div class="tri-list-head">
+        <div class="tri-list-title">Review <em>Queue</em></div>
+        <div class="tri-list-count" id="reviewCount">0 items</div>
+      </div>
+      <div class="tri-list-sub" style="padding-bottom:12px">Upload receipts to review before pushing to ServiceTitan</div>
+      <div class="tri-list-toolbar">
+        <label class="btn-primary" style="justify-content:center;cursor:pointer" for="reviewFileInput">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>
+          Upload more
+        </label>
+        <input type="file" id="reviewFileInput" accept="application/pdf,image/jpeg,image/png,image/webp,image/gif" multiple hidden />
+      </div>
+      <div class="tri-items" id="reviewItems">
+        <div class="empty-state">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <p>No receipts in queue.<br>Upload files from the dashboard.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="tri-preview">
+      <div class="tri-preview-toolbar">
+        <span id="reviewPreviewName">No file selected</span>
+        <div style="margin-left:auto;display:flex;gap:6px">
+          <button class="tp-btn" title="Download" id="reviewDownloadBtn" style="display:none">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="tri-preview-body" id="reviewPreviewBody">
+        <div class="preview-placeholder">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <p>Select a receipt from the list</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="tri-details" id="reviewDetailsPanel">
+      <div class="tri-details-head">
+        <div class="tri-details-title">Extracted Details</div>
+      </div>
+      <div class="tri-details-body" id="reviewDetailsBody">
+        <div class="tri-empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <p>Select a receipt to review and fill in details</p>
+        </div>
+      </div>
+      <div class="detail-actions" id="reviewActions" style="display:none">
+        <button class="btn-save" id="reviewSaveBtn">Save receipt</button>
+        <button class="btn-st" id="reviewPostBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M22 2L11 13"/><path d="M22 2L15 22 11 13 2 9l20-7z"/></svg>
+          Post to ServiceTitan
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- VIEW: HISTORY -->
+  <div class="view triview" id="view-history">
+    <div class="tri-list">
+      <div class="tri-list-head">
+        <div class="tri-list-title">Processing <em>History</em></div>
+        <div class="tri-list-count" id="historyCount">0 receipts</div>
+      </div>
+      <div class="tri-list-toolbar" style="margin-top:12px">
+        <div class="tri-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <input placeholder="Search receipts…" id="historySearch" />
+        </div>
+        <select class="tri-select" id="historyFilter">
+          <option value="all">All Status</option>
+          <option value="saved">Saved</option>
+          <option value="pushed">Pushed to ST</option>
+          <option value="pending">Pending</option>
+        </select>
+      </div>
+      <div class="tri-items" id="historyItems">
+        <div class="empty-state">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          <p>No processed receipts yet.<br>Save or post a receipt to see it here.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="tri-preview">
+      <div class="tri-preview-toolbar">
+        <span id="historyPreviewName">No file selected</span>
+        <div style="margin-left:auto;display:flex;gap:6px">
+          <button class="tp-btn" title="Download" id="historyDownloadBtn" style="display:none">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="tri-preview-body" id="historyPreviewBody">
+        <div class="preview-placeholder">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <p>Select a receipt from the list</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="tri-details">
+      <div class="tri-details-head">
+        <div class="tri-details-title">Details</div>
+        <div class="tri-details-actions">
+          <button class="icon-btn-sm danger" id="historyDeleteBtn" title="Delete receipt" style="display:none" onclick="deleteSelected()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="tri-details-body" id="historyDetailsBody">
+        <div class="tri-empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <p>Select a receipt to view details</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- VIEW: GMAIL -->
+  <div class="view" id="view-gmail" style="padding:0">
+    <div class="gmail-page">
+      <div class="gmail-page-head">
+        <div>
+          <div class="gmail-page-title">Gmail <em>Receipts</em></div>
+          <div class="gmail-page-sub">Receipts emailed in via n8n — processed automatically</div>
+        </div>
+        <div class="gmail-page-btns">
+          <button class="btn-ghost">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            Refresh
+          </button>
+          <button class="btn-primary">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            Process Now
+          </button>
+        </div>
+      </div>
+
+      <div class="gmail-stats">
+        <div class="gmail-stat">
+          <div><div class="gmail-stat-num" id="gTotal">0</div><div class="gmail-stat-label">Total</div></div>
+        </div>
+        <div class="gmail-stat">
+          <div><div class="gmail-stat-num orange" id="gPending">0</div><div class="gmail-stat-label">Pending</div></div>
+        </div>
+        <div class="gmail-stat">
+          <div><div class="gmail-stat-num green" id="gDone">0</div><div class="gmail-stat-label">Done</div></div>
+        </div>
+        <div class="gmail-stat">
+          <div><div class="gmail-stat-num red" id="gFailed">0</div><div class="gmail-stat-label">Failed</div></div>
+        </div>
+      </div>
+
+      <div class="gmail-table-card">
+        <table class="gmail-table">
+          <thead>
+            <tr>
+              <th>From</th><th>Subject</th><th>File</th><th>Received</th><th>Status</th><th>Error</th>
+            </tr>
+          </thead>
+          <tbody id="gmailTableBody">
+            <tr>
+              <td colspan="6">
+                <div class="empty-state" style="padding:40px 16px">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+                  <p>No Gmail receipts yet.<br>Click <strong>Process Now</strong> to pull from inbox.</p>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- VIEW: REPORTS placeholder -->
+  <div class="view" id="view-reports">
+    <div class="empty-state" style="margin-top:80px">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M3 3h18v4H3zM3 10h18v4H3zM3 17h18v4H3z"/></svg>
+      <p style="font-size:16px;font-family:'Fraunces',serif">Reports coming soon</p>
+    </div>
+  </div>
+
+  <!-- VIEW: SETTINGS placeholder -->
+  <div class="view" id="view-settings">
+    <div class="empty-state" style="margin-top:80px">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      <p style="font-size:16px;font-family:'Fraunces',serif">Settings coming soon</p>
+    </div>
+  </div>
+
+</div><!-- end .content -->
+</div><!-- end .app -->
+
+<script>
+// ============================================================
+// AUTH
+// ============================================================
+let sbClient = null;
+
+// TODO: replace with Supabase auth when ready
+const TEMP_USER = { email: 'user@gmail.com', password: 'mysecret123', name: 'User' };
+
+async function initAuth() {
+  showLogin();
+}
+
+function showLogin(msg) {
+  document.getElementById('loginOverlay').style.display = 'flex';
+  document.getElementById('app').style.display = 'none';
+  if (msg) {
+    const el = document.getElementById('loginError');
+    el.textContent = msg;
+    el.classList.add('visible');
+  }
+}
+
+function onLogin(user) {
+  document.getElementById('loginOverlay').style.display = 'none';
+  document.getElementById('app').style.display = 'grid';
+
+  // Derive display name + initials
+  const email   = user.email || '';
+  const rawName = user.user_metadata?.full_name || user.user_metadata?.name || email.split('@')[0];
+  const initials = rawName.split(/[\s._-]+/).map(p => p[0]).join('').toUpperCase().slice(0, 2) || '?';
+
+  document.getElementById('sidebarAvatar').textContent  = initials;
+  document.getElementById('sidebarName').textContent    = rawName;
+  document.getElementById('sidebarEmail').textContent   = email;
+  document.getElementById('topbarAvatar').textContent   = initials;
+}
+
+function onLogout() {
+  showLogin();
+}
+
+async function signOut() {
+  onLogout(); // TODO: sbClient.auth.signOut() when Supabase is wired up
+}
+
+// Login form handler
+document.getElementById('loginBtn').addEventListener('click', async () => {
+  const email    = document.getElementById('loginEmail').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const errEl    = document.getElementById('loginError');
+  const btn      = document.getElementById('loginBtn');
+
+  errEl.classList.remove('visible');
+  if (!email || !password) { errEl.textContent = 'Please enter your email and password.'; errEl.classList.add('visible'); return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Signing in…';
+
+  // TODO: swap for Supabase auth
+  await new Promise(r => setTimeout(r, 400));
+  btn.disabled = false;
+  btn.textContent = 'Sign in';
+
+  if (email !== TEMP_USER.email || password !== TEMP_USER.password) {
+    errEl.textContent = 'Incorrect email or password.';
+    errEl.classList.add('visible');
+    return;
+  }
+  onLogin({ email: TEMP_USER.email, user_metadata: { full_name: TEMP_USER.name } });
+});
+
+// Allow Enter key to submit login
+['loginEmail','loginPassword'].forEach(id => {
+  document.getElementById(id).addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('loginBtn').click();
+  });
+});
+
+// ============================================================
+// STATE
+// ============================================================
+let receipts = [];       // all receipts (review + history)
+let selectedId = null;   // currently selected receipt ID
+let currentView = 'dashboard';
+
+function genId() { return 'REC-' + Math.random().toString(36).slice(2,7).toUpperCase(); }
+function nowFull() { return new Date().toLocaleString('en-CA',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
+function nowISO()  { return new Date().toISOString(); }
+
+// ============================================================
+// ROUTER
+// ============================================================
+function navigate(viewId) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+
+  const view = document.getElementById('view-' + viewId);
+  if (view) view.classList.add('active');
+
+  const navItem = document.querySelector('[data-view="' + viewId + '"]');
+  if (navItem) navItem.classList.add('active');
+
+  currentView = viewId;
+
+  if (viewId === 'review')  renderReviewList();
+  if (viewId === 'history') renderHistoryList();
+}
+
+document.querySelectorAll('.nav-item[data-view]').forEach(item => {
+  item.addEventListener('click', () => navigate(item.dataset.view));
+});
+
+// feed filter tabs
+document.querySelectorAll('.feed-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.feed-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    renderFeed(tab.dataset.feed);
+  });
+});
+
+// history search + filter
+document.getElementById('historySearch').addEventListener('input', renderHistoryList);
+document.getElementById('historyFilter').addEventListener('change', renderHistoryList);
+
+// kick off auth — shows login screen or app depending on existing session
+initAuth();
+
+// ============================================================
+// DASHBOARD — drop zone
+// ============================================================
+const dropZone      = document.getElementById('dropZone');
+const fileInput     = document.getElementById('fileInput');
+const browseBtn     = document.getElementById('browseBtn');
+const queue         = document.getElementById('queue');
+const reviewFileInput = document.getElementById('reviewFileInput');
+
+browseBtn.addEventListener('click', e => { e.stopPropagation(); fileInput.click(); });
+dropZone.addEventListener('click', e => {
+  if (e.target.closest('.btn-ghost') || e.target.closest('.queue-item')) return;
+  fileInput.click();
+});
+['dragenter','dragover'].forEach(evt => dropZone.addEventListener(evt, e => { e.preventDefault(); dropZone.classList.add('dragover'); }));
+['dragleave','drop'].forEach(evt => dropZone.addEventListener(evt, e => {
+  e.preventDefault();
+  if (evt === 'dragleave' && dropZone.contains(e.relatedTarget)) return;
+  dropZone.classList.remove('dragover');
+}));
+dropZone.addEventListener('drop',   e => handleFiles(e.dataTransfer.files, 'dashboard'));
+fileInput.addEventListener('change', e => { handleFiles(e.target.files, 'dashboard'); fileInput.value = ''; });
+reviewFileInput.addEventListener('change', e => { handleFiles(e.target.files, 'review'); reviewFileInput.value = ''; });
+
+function fileTypeLabel(f) {
+  if (f.type === 'application/pdf') return 'PDF';
+  if (f.type.startsWith('image/')) return f.type.split('/')[1].toUpperCase().slice(0,4);
+  return 'FILE';
+}
+function isImage(f) { return f.type.startsWith('image/'); }
+
+function handleFiles(files, source) {
+  const allowed = [...files].filter(f => f.type === 'application/pdf' || f.type.startsWith('image/'));
+  if (!allowed.length) return;
+
+  allowed.forEach(f => {
+    const id      = genId();
+    const fileURL = URL.createObjectURL(f);
+    const rec = {
+      id, name: f.name, size: f.size, type: f.type, fileURL,
+      source: source === 'review' ? 'upload' : 'upload',
+      date: nowFull(), savedDate: null,
+      status: 'pending',    // pending | saved | pushed
+      vendor: '', invoice: '', amount: '', jobId: '', invoiceDate: '',
+      lineItems: []
+    };
+    receipts.unshift(rec);
+
+    // dashboard queue pill
+    if (source === 'dashboard') {
+      queue.classList.add('visible');
+      const item = document.createElement('div');
+      item.className = 'queue-item';
+      const kb = (f.size/1024).toFixed(0);
+      const sz = kb > 1024 ? (kb/1024).toFixed(1)+' MB' : kb+' KB';
+      item.innerHTML = `
+        <div class="queue-icon">${fileTypeLabel(f)}</div>
+        <div class="queue-info"><div class="queue-name">${f.name}</div><div class="queue-size">${sz}</div></div>
+        <div class="queue-status" style="color:var(--ink-mute)">Ready →</div>`;
+      queue.appendChild(item);
+    }
+  });
+
+  updateStats();
+  renderFeed('all');
+  document.querySelector('.feed-tab[data-feed="all"]').click();
+
+  // navigate to review queue
+  setTimeout(() => navigate('review'), source === 'dashboard' ? 600 : 0);
+}
+
+// ============================================================
+// REVIEW QUEUE
+// ============================================================
+function renderReviewList() {
+  const pending = receipts.filter(r => r.status === 'pending' || r.status === 'saved');
+  const el = document.getElementById('reviewItems');
+  document.getElementById('reviewCount').textContent = pending.length + ' item' + (pending.length !== 1 ? 's' : '');
+  updateNavCounts();
+
+  if (!pending.length) {
+    el.innerHTML = `<div class="empty-state"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><p>No receipts in queue.<br>Upload files from the dashboard.</p></div>`;
+    return;
+  }
+  el.innerHTML = '';
+  pending.forEach(r => {
+    const item = document.createElement('div');
+    item.className = 'rec-item' + (r.id === selectedId ? ' active' : '');
+    item.dataset.id = r.id;
+    const typeLabel = r.type === 'application/pdf' ? 'PDF' : r.type.split('/')[1].toUpperCase().slice(0,4);
+    const isImg = r.type.startsWith('image/');
+    item.innerHTML = `
+      <div class="rec-icon ${isImg ? 'img-icon' : ''}">${typeLabel}</div>
+      <div class="rec-body">
+        <div class="rec-name">${r.name}</div>
+        <div class="rec-id">${r.date}</div>
+        <div class="rec-meta">${r.vendor || 'Vendor not set'}</div>
+      </div>
+      <div class="rec-right">
+        <div class="rec-amount">${r.amount ? '$'+r.amount : '—'}</div>
+        <span class="rec-badge ${r.status === 'saved' ? 'saved' : 'ready'}">${r.status === 'saved' ? 'Saved' : 'Ready'}</span>
+      </div>`;
+    item.addEventListener('click', () => selectReceipt(r.id, 'review'));
+    el.appendChild(item);
+  });
+}
+
+function selectReceipt(id, panel) {
+  selectedId = id;
+  const r = receipts.find(x => x.id === id);
+  if (!r) return;
+
+  if (panel === 'review') {
+    renderReviewList();
+    showPreview(r, 'review');
+    showReviewDetails(r);
+  } else {
+    renderHistoryList();
+    showPreview(r, 'history');
+    showHistoryDetails(r);
+  }
+}
+
+function showPreview(r, panel) {
+  const prefix = panel;
+  document.getElementById(prefix + 'PreviewName').textContent = r.name;
+  const dlBtn = document.getElementById(prefix + 'DownloadBtn');
+  dlBtn.style.display = 'flex';
+  dlBtn.onclick = () => { const a = document.createElement('a'); a.href = r.fileURL; a.download = r.name; a.click(); };
+
+  const body = document.getElementById(prefix + 'PreviewBody');
+  if (r.type.startsWith('image/')) {
+    body.innerHTML = `<img class="preview-img" src="${r.fileURL}" alt="${r.name}" />`;
+  } else {
+    body.innerHTML = `<iframe class="preview-pdf" src="${r.fileURL}"></iframe>`;
+  }
+}
+
+function showReviewDetails(r) {
+  const body = document.getElementById('reviewDetailsBody');
+  const actions = document.getElementById('reviewActions');
+  actions.style.display = 'flex';
+
+  body.innerHTML = `
+    <div>
+      <div class="detail-section-label">Receipt Info</div>
+      <div class="detail-grid">
+        <div class="detail-field">
+          <div class="detail-label">Vendor / Store</div>
+          <input class="detail-input" id="rf-vendor" placeholder="e.g. Andrew Sheret" value="${r.vendor}" />
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Invoice / Receipt No.</div>
+          <input class="detail-input" id="rf-invoice" placeholder="e.g. INV-84921" value="${r.invoice}" />
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Invoice Date</div>
+          <input class="detail-input" id="rf-date" type="date" value="${r.invoiceDate}" />
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Total Amount</div>
+          <input class="detail-input" id="rf-amount" placeholder="e.g. 981.47" value="${r.amount}" />
+        </div>
+        <div class="detail-field full">
+          <div class="detail-label">Job / PO Number</div>
+          <input class="detail-input" id="rf-job" placeholder="e.g. Job #1095" value="${r.jobId}" />
+        </div>
+      </div>
+    </div>
+    <div class="detail-divider"></div>
+    <div>
+      <div class="detail-section-label">Line Items</div>
+      <table class="line-items-table">
+        <thead><tr><th>Description</th><th>Qty</th><th>Unit</th><th>Total</th></tr></thead>
+        <tbody id="lineItemsBody">${renderLineItemRows(r.lineItems)}</tbody>
+      </table>
+      <button class="add-line-btn" onclick="addLineItem('${r.id}')">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+        Add line item
+      </button>
+    </div>`;
+
+  // wire save + post buttons
+  const saveBtn = document.getElementById('reviewSaveBtn');
+  const postBtn = document.getElementById('reviewPostBtn');
+
+  if (r.status === 'saved') {
+    saveBtn.textContent = 'Saved ✓';
+    saveBtn.classList.add('saved');
+  } else {
+    saveBtn.textContent = 'Save receipt';
+    saveBtn.classList.remove('saved');
+  }
+  if (r.status === 'pushed') {
+    postBtn.textContent = 'Pushed to ST ✓';
+    postBtn.disabled = true;
+  } else {
+    postBtn.textContent = 'Post to ServiceTitan';
+    postBtn.disabled = false;
+  }
+
+  saveBtn.onclick = () => saveReceipt(r.id);
+  postBtn.onclick = () => postToST(r.id);
+}
+
+function renderLineItemRows(items) {
+  if (!items.length) return '<tr><td colspan="4" style="color:var(--ink-mute);text-align:center;padding:12px">No line items</td></tr>';
+  return items.map(li => `<tr><td>${li.desc}</td><td>${li.qty}</td><td>$${li.unit}</td><td>$${li.total}</td></tr>`).join('');
+}
+
+function addLineItem(id) {
+  const r = receipts.find(x => x.id === id);
+  if (!r) return;
+  r.lineItems.push({ desc: '', qty: 1, unit: '0.00', total: '0.00' });
+  document.getElementById('lineItemsBody').innerHTML = renderLineItemRows(r.lineItems);
+}
+
+function readReviewForm(r) {
+  r.vendor      = document.getElementById('rf-vendor')?.value  || r.vendor;
+  r.invoice     = document.getElementById('rf-invoice')?.value || r.invoice;
+  r.invoiceDate = document.getElementById('rf-date')?.value    || r.invoiceDate;
+  r.amount      = document.getElementById('rf-amount')?.value  || r.amount;
+  r.jobId       = document.getElementById('rf-job')?.value     || r.jobId;
+}
+
+function saveReceipt(id) {
+  const r = receipts.find(x => x.id === id);
+  if (!r) return;
+  readReviewForm(r);
+  r.status    = 'saved';
+  r.savedDate = nowISO();
+  const btn = document.getElementById('reviewSaveBtn');
+  btn.textContent = 'Saved ✓';
+  btn.classList.add('saved');
+  renderReviewList();
+  renderFeed('all');
+  updateStats();
+}
+
+function postToST(id) {
+  const r = receipts.find(x => x.id === id);
+  if (!r) return;
+  readReviewForm(r);
+  r.status    = 'pushed';
+  r.savedDate = r.savedDate || nowISO();
+  const postBtn = document.getElementById('reviewPostBtn');
+  postBtn.textContent = 'Pushed to ST ✓';
+  postBtn.disabled = true;
+  const saveBtn = document.getElementById('reviewSaveBtn');
+  saveBtn.textContent = 'Saved ✓';
+  saveBtn.classList.add('saved');
+  renderReviewList();
+  renderHistoryList();
+  renderFeed('all');
+  updateStats();
+}
+
+// ============================================================
+// HISTORY
+// ============================================================
+function renderHistoryList() {
+  const search  = document.getElementById('historySearch').value.toLowerCase();
+  const filter  = document.getElementById('historyFilter').value;
+  const saved   = receipts.filter(r => r.status === 'saved' || r.status === 'pushed');
+
+  let filtered = saved.filter(r => {
+    const matchStatus = filter === 'all' || r.status === filter;
+    const matchSearch = !search ||
+      r.name.toLowerCase().includes(search) ||
+      r.vendor.toLowerCase().includes(search) ||
+      r.jobId.toLowerCase().includes(search) ||
+      r.id.toLowerCase().includes(search);
+    return matchStatus && matchSearch;
+  });
+
+  document.getElementById('historyCount').textContent = filtered.length + ' receipt' + (filtered.length !== 1 ? 's' : '');
+  updateNavCounts();
+
+  const el = document.getElementById('historyItems');
+  if (!filtered.length) {
+    el.innerHTML = `<div class="empty-state"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><p>No receipts found.</p></div>`;
+    return;
+  }
+  el.innerHTML = '';
+  filtered.forEach(r => {
+    const item = document.createElement('div');
+    item.className = 'rec-item' + (r.id === selectedId ? ' active' : '');
+    item.dataset.id = r.id;
+    const typeLabel = r.type === 'application/pdf' ? 'PDF' : r.type.split('/')[1].toUpperCase().slice(0,4);
+    const isImg = r.type.startsWith('image/');
+    const badgeClass = r.status === 'pushed' ? 'pushed' : 'saved';
+    const badgeText  = r.status === 'pushed' ? 'In ST' : 'Saved';
+    item.innerHTML = `
+      <div class="rec-icon ${isImg ? 'img-icon' : ''}">${typeLabel}</div>
+      <div class="rec-body">
+        <div class="rec-name">${r.vendor || r.name}</div>
+        <div class="rec-id">${r.id} · ${r.invoice || '—'}</div>
+        <div class="rec-meta">${r.date} · ${r.jobId || 'No job set'}</div>
+      </div>
+      <div class="rec-right">
+        <div class="rec-amount">${r.amount ? '$'+r.amount : '—'}</div>
+        <span class="rec-badge ${badgeClass}">${badgeText}</span>
+      </div>`;
+    item.addEventListener('click', () => selectReceipt(r.id, 'history'));
+    el.appendChild(item);
+  });
+}
+
+function showHistoryDetails(r) {
+  document.getElementById('historyDeleteBtn').style.display = 'flex';
+  const body = document.getElementById('historyDetailsBody');
+  const badgeClass = r.status === 'pushed' ? 'pushed' : 'saved';
+  const badgeText  = r.status === 'pushed' ? '✓ In ServiceTitan' : 'Saved';
+  body.innerHTML = `
+    <div>
+      <div class="detail-section-label">Receipt</div>
+      <div class="detail-grid">
+        <div class="detail-field full">
+          <div class="detail-label">Receipt ID</div>
+          <div class="detail-value mono">${r.id}</div>
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Vendor</div>
+          <div class="detail-value">${r.vendor || '—'}</div>
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Invoice</div>
+          <div class="detail-value">${r.invoice || '—'}</div>
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Date</div>
+          <div class="detail-value">${r.invoiceDate || r.date}</div>
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Amount</div>
+          <div class="detail-value accent">${r.amount ? '$'+r.amount : '—'}</div>
+        </div>
+      </div>
+    </div>
+    <div class="detail-divider"></div>
+    <div>
+      <div class="detail-section-label">ServiceTitan</div>
+      <div class="detail-grid">
+        <div class="detail-field">
+          <div class="detail-label">Job</div>
+          <div class="detail-value">${r.jobId || '—'}</div>
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Status</div>
+          <div><span class="status-badge ${badgeClass}">${badgeText}</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="detail-divider"></div>
+    <div>
+      <div class="detail-section-label">File</div>
+      <div class="detail-grid">
+        <div class="detail-field">
+          <div class="detail-label">Type</div>
+          <div class="detail-value">${r.type === 'application/pdf' ? 'PDF' : 'Image'}</div>
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Source</div>
+          <div class="detail-value">${r.source === 'gmail' ? 'Gmail' : 'Upload'}</div>
+        </div>
+        <div class="detail-field full">
+          <div class="detail-label">Saved</div>
+          <div class="detail-value mono" style="font-size:10px">${r.savedDate || '—'}</div>
+        </div>
+      </div>
+    </div>
+    ${r.status !== 'pushed' ? `<div class="detail-divider"></div><button class="btn-st" onclick="postToSTFromHistory('${r.id}')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M22 2L11 13"/><path d="M22 2L15 22 11 13 2 9l20-7z"/></svg>Post to ServiceTitan</button>` : ''}
+  `;
+}
+
+function postToSTFromHistory(id) {
+  const r = receipts.find(x => x.id === id);
+  if (!r) return;
+  r.status = 'pushed';
+  renderHistoryList();
+  showHistoryDetails(r);
+  renderFeed('all');
+  updateStats();
+}
+
+function deleteSelected() {
+  if (!selectedId) return;
+  receipts = receipts.filter(r => r.id !== selectedId);
+  selectedId = null;
+  document.getElementById('historyDeleteBtn').style.display = 'none';
+  document.getElementById('historyPreviewBody').innerHTML = `<div class="preview-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><p>Select a receipt from the list</p></div>`;
+  document.getElementById('historyPreviewName').textContent = 'No file selected';
+  document.getElementById('historyDetailsBody').innerHTML = `<div class="tri-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><p>Select a receipt to view details</p></div>`;
+  renderHistoryList();
+  renderFeed('all');
+  updateStats();
+}
+
+// ============================================================
+// FEED (dashboard)
+// ============================================================
+function renderFeed(filter) {
+  const feedList = document.getElementById('feedList');
+  const visible  = filter === 'all' ? receipts : receipts.filter(r => r.source === filter);
+  if (!visible.length) {
+    feedList.innerHTML = `<div class="empty-state"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><p>No receipts yet.</p></div>`;
+    return;
+  }
+  feedList.innerHTML = '';
+  visible.forEach(r => {
+    const row = document.createElement('div');
+    row.className = 'feed-row';
+    const iconClass = r.source === 'gmail' ? 'gmail' : (r.type === 'application/pdf' ? 'pdf' : 'img');
+    const iconLabel = r.source === 'gmail' ? 'MAIL' : (r.type === 'application/pdf' ? 'PDF' : 'IMG');
+    const stSent = r.status === 'pushed';
+    row.innerHTML = `
+      <div class="feed-source-icon ${iconClass}">${iconLabel}</div>
+      <div class="feed-file"><div class="feed-file-name">${r.name}</div><div class="feed-file-date">${r.date}</div></div>
+      <div class="feed-amount ${r.amount ? '' : 'pending'}">${r.amount ? '$'+r.amount : '—'}</div>
+      <div class="feed-job  ${r.jobId  ? '' : 'pending'}">${r.jobId  || 'Pending'}</div>
+      <div class="feed-st"><span class="st-badge ${stSent ? 'sent' : 'pending'}">${stSent ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="10" height="10"><polyline points="20 6 9 17 4 12"/></svg> Sent' : '…'}</span></div>`;
+    row.addEventListener('click', () => {
+      if (r.status === 'pending' || r.status === 'saved') navigate('review');
+      else navigate('history');
+      setTimeout(() => selectReceipt(r.id, r.status === 'pushed' ? 'history' : 'review'), 50);
+    });
+    feedList.appendChild(row);
+  });
+}
+
+// ============================================================
+// STATS
+// ============================================================
+function updateStats() {
+  const pushed  = receipts.filter(r => r.status === 'pushed');
+  const total   = receipts.length;
+  const pending = receipts.filter(r => r.status === 'pending').length;
+  const pct     = total ? Math.round(((total - pending) / total) * 100) : 0;
+
+  document.getElementById('statSent').textContent = pushed.length;
+  document.getElementById('statSentTrend').textContent = pushed.length ? '↑' : '—';
+
+  const totalAmt = receipts.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
+  document.getElementById('statCost').textContent = totalAmt.toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2});
+
+  const vendors = new Set(receipts.map(r => r.vendor).filter(Boolean));
+  document.getElementById('statVendors').textContent = vendors.size + ' vendor' + (vendors.size !== 1 ? 's' : '');
+
+  document.getElementById('statProcessed').innerHTML = (total - pending) + `<span style="font-size:20px;color:var(--ink-mute)">/${total}</span>`;
+  document.getElementById('statPending').textContent = pending + ' awaiting review';
+  document.getElementById('statPct').textContent     = total ? pct + '%' : '—';
+
+  document.getElementById('stQueueCount').textContent = pending;
+  updateNavCounts();
+}
+
+function updateNavCounts() {
+  const reviewPending = receipts.filter(r => r.status === 'pending' || r.status === 'saved').length;
+  const histTotal     = receipts.filter(r => r.status === 'saved' || r.status === 'pushed').length;
+  const reviewEl  = document.getElementById('navReviewCount');
+  const historyEl = document.getElementById('navHistoryCount');
+  reviewEl.textContent  = reviewPending  || '';
+  historyEl.textContent = histTotal      || '';
+}
+</script>
+</body>
+</html>

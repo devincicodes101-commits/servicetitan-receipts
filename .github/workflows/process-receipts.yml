@@ -1,0 +1,21 @@
+name: Process Upload Queue
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Process manual upload queue (one item per call, loop until empty)
+        run: |
+          for i in $(seq 1 20); do
+            OUT=$(curl -s -X POST https://receiptflow-csk.vercel.app/api/process-queue \
+              -H "x-process-secret: ${{ secrets.PROCESS_SECRET }}" \
+              -H "Content-Type: application/json")
+            echo "Loop $i: $OUT"
+            echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('pending',1)==0 else 1)" && break
+            sleep 3
+          done
