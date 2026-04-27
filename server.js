@@ -306,6 +306,94 @@ app.post('/api/process-incoming-row', async (req, res) => {
   return res.json(result);
 });
 
+// ── Process a manually-uploaded receipt for ServiceTitan (background) ──
+async function processIncomingForST(sb, incoming) {
+  const rowId = incoming.id;
+  const markFailed = async (errorMsg) => {
+    console.error(`[process-st] ${rowId}: failed — ${errorMsg}`);
+    await sb.from('incoming_receipts').update({
+      status: 'failed', error: errorMsg, processed_at: new Date().toISOString()
+    }).eq('id', rowId);
+  };
+
+  try {
+    const fileRes = await fetch(incoming.file_url);
+    if (!fileRes.ok) { await markFailed(`Could not download file: HTTP ${fileRes.status}`); return; }
+    const fileBuffer = Buffer.from(await fileRes.arrayBuffer());
+    const mimeType = getMimeType(incoming.file_name, incoming.file_url);
+
+    console.log(`[process-st] ${rowId}: ${fileBuffer.length} bytes, mime=${mimeType}`);
+
+    await sb.from('incoming_receipts').update({ status: 'processing' }).eq('id', rowId);
+
+    const geminiOutput = await parseWithGemini(fileBuffer, mimeType);
+    const fields = extractFieldsFromLlama(geminiOutput);
+    console.log(`[process-st] ${rowId}: fields=`, JSON.stringify(fields));
+
+    let receiptBlobUrl = incoming.file_url;
+    if (process.env.BLOB_READ_WRITE_TOKEN) {
+      try {
+        const ext = mimeType === 'application/pdf' ? 'pdf' : (mimeType.split('/')[1] || 'jpg');
+        const blobResult = await blobPut(`receipts/st_${rowId}.${ext}`, fileBuffer, {
+          access: 'public', contentType: mimeType, token: process.env.BLOB_READ_WRITE_TOKEN
+        });
+        receiptBlobUrl = blobResult.url;
+      } catch (blobErr) {
+        console.error(`[process-st] ${rowId}: Blob upload failed:`, blobErr.message);
+      }
+    }
+
+    const receiptId = randomUUID();
+    const { error: insertErr } = await sb.from('receipts').insert({
+      id: receiptId,
+      user_id: incoming.user_id,
+      vendor: fields.vendor || null,
+      date: fields.date || null,
+      amount: parseFloat(fields.total) || 0,
+      total: fields.total != null ? String(fields.total) : null,
+      job_no: fields.jobNo || null,
+      invoice_no: fields.invoiceNo || null,
+      po_number: fields.poNumber || null,
+      required_date: fields.requiredDate || null,
+      vendor_invoice_no: fields.vendorInvoiceNo || null,
+      category: null,
+      items: fields.items || [],
+      receipt_blob_url: receiptBlobUrl,
+      status: 'pending',
+      error: null,
+      saved_at: new Date().toISOString()
+    });
+
+    if (insertErr) {
+      console.error(`[process-st] ${rowId}: receipts insert error (continuing):`, insertErr.message);
+    }
+
+    const resultData = {
+      vendor: fields.vendor || null,
+      invoiceNo: fields.invoiceNo || null,
+      date: fields.date || null,
+      total: fields.total || null,
+      jobNo: fields.jobNo || null,
+      poNumber: fields.poNumber || null,
+      requiredDate: fields.requiredDate || null,
+      vendorInvoiceNo: fields.vendorInvoiceNo || null,
+      items: fields.items || [],
+      receiptBlobUrl,
+      receiptId: insertErr ? null : receiptId
+    };
+
+    await sb.from('incoming_receipts').update({
+      status: 'done', error: null, processed_at: new Date().toISOString(),
+      result: resultData
+    }).eq('id', rowId);
+
+    console.log(`[process-st] ${rowId}: complete. receiptId=${receiptId}`);
+  } catch (err) {
+    console.error(`[process-st] ${rowId}: unhandled error:`, err);
+    await markFailed(err.message || 'Unknown error');
+  }
+}
+
 // ── Process manual upload queue (queue-based, no auto-post) ──
 async function processOneQueueRow(sb, row) {
   const rowId = row.id;
@@ -496,10 +584,12 @@ app.use(async (req, res, next) => {
     '/api/extract',
     '/api/extract-url',
     '/api/create-po',
-    '/api/create-expense'
+    '/api/create-expense',
+    '/api/queue-manual-upload',
+    '/api/receipts-list'
   ];
 
-  if (!req.path.startsWith('/api/') || open.includes(req.path)) return next();
+  if (!req.path.startsWith('/api/') || open.includes(req.path) || req.path.startsWith('/api/incoming-status/')) return next();
 
   const token = (req.headers.authorization || '').replace('Bearer ', '').trim();
   if (!token) return res.status(401).json({ error: 'Not authenticated', code: 'NOT_AUTHENTICATED' });
@@ -1727,6 +1817,75 @@ app.post('/api/create-expense', async (req, res) => {
   }
 });
 
+
+// ── Queue a manual file upload for background ST processing ──
+app.post('/api/queue-manual-upload', upload.single('receipt'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    if (!process.env.BLOB_READ_WRITE_TOKEN) {
+      return res.status(503).json({ error: 'Blob storage not configured (BLOB_READ_WRITE_TOKEN missing)' });
+    }
+
+    const { buffer: fileBuffer, mimetype: mimeType, originalname: fileName } = req.file;
+    const ext = mimeType === 'application/pdf' ? 'pdf' : (mimeType.split('/')[1] || 'jpg');
+    const blobResult = await blobPut(`receipts/uploads/upload_${Date.now()}.${ext}`, fileBuffer, {
+      access: 'public', contentType: mimeType, token: process.env.BLOB_READ_WRITE_TOKEN
+    });
+    const fileUrl = blobResult.url;
+
+    const sb = await getSupabaseAdmin();
+    const userId = (process.env.SYSTEM_USER_ID || '').trim() || null;
+
+    const { data: row, error: insertErr } = await sb.from('incoming_receipts').insert({
+      user_id: userId,
+      file_url: fileUrl,
+      file_name: fileName,
+      status: 'pending'
+    }).select('id').single();
+
+    if (insertErr) return res.status(500).json({ error: insertErr.message });
+
+    const incoming = { id: row.id, file_url: fileUrl, file_name: fileName, user_id: userId };
+    processIncomingForST(sb, incoming).catch(err =>
+      console.error(`[queue-manual-upload] bg error for ${row.id}:`, err.message)
+    );
+
+    return res.json({ success: true, id: row.id, fileUrl });
+  } catch (err) {
+    console.error('[queue-manual-upload] error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Poll status of a manually-queued upload ──
+app.get('/api/incoming-status/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const sb = await getSupabaseAdmin();
+    const { data: row, error } = await sb.from('incoming_receipts')
+      .select('id, status, error, result, processed_at').eq('id', id).single();
+    if (error || !row) return res.status(404).json({ error: 'Not found' });
+    return res.json({ status: row.status, error: row.error || null, data: row.result || null });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── List all receipts from DB ──
+app.get('/api/receipts-list', async (req, res) => {
+  try {
+    const sb = await getSupabaseAdmin();
+    const { data, error } = await sb.from('receipts')
+      .select('*')
+      .order('saved_at', { ascending: false })
+      .limit(200);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ receipts: data || [] });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 // Serve index.html for all non-API routes (VPS mode)
 const path = require('path');

@@ -751,6 +751,8 @@ function onLogin(user) {
   document.getElementById('sidebarName').textContent    = rawName;
   document.getElementById('sidebarEmail').textContent   = email;
   document.getElementById('topbarAvatar').textContent   = initials;
+
+  loadReceiptsFromDB();
 }
 
 function onLogout() {
@@ -899,17 +901,18 @@ function handleFiles(files, source) {
       queue.classList.add('visible');
       const item = document.createElement('div');
       item.className = 'queue-item';
+      item.dataset.qid = id;
       const kb = (f.size/1024).toFixed(0);
       const sz = kb > 1024 ? (kb/1024).toFixed(1)+' MB' : kb+' KB';
       item.innerHTML = `
         <div class="queue-icon">${fileTypeLabel(f)}</div>
         <div class="queue-info"><div class="queue-name">${f.name}</div><div class="queue-size">${sz}</div></div>
-        <div class="queue-status" style="color:var(--ink-mute)">Extracting…</div>`;
+        <div class="queue-status" style="color:var(--ink-mute)">Uploading…</div>`;
       queue.appendChild(item);
     }
 
-    // auto-extract via Gemini OCR
-    extractFile(f, id);
+    // queue for background processing via Supabase + Gemini
+    queueUpload(f, id);
   });
 
   updateStats();
@@ -954,6 +957,142 @@ async function extractFile(file, id) {
     const r = receipts.find(x => x.id === id);
     if (r) r.extracting = false;
     renderReviewList();
+  }
+}
+
+async function queueUpload(file, id) {
+  const fd = new FormData();
+  fd.append('receipt', file);
+  try {
+    const res  = await fetch('/api/queue-manual-upload', { method: 'POST', body: fd });
+    const json = await res.json();
+    const r    = receipts.find(x => x.id === id);
+    if (!r) return;
+
+    if (!json.success) {
+      r.extracting = false;
+      r.uploadError = json.error || 'Upload failed';
+      setQueuePillStatus(id, 'Failed');
+      renderReviewList();
+      return;
+    }
+
+    // Use the stable Blob URL for the PDF viewer
+    if (json.fileUrl) r.fileURL = json.fileUrl;
+    r.incomingId = json.id;
+    setQueuePillStatus(id, 'Processing…');
+    pollIncomingStatus(json.id, id);
+  } catch (e) {
+    const r = receipts.find(x => x.id === id);
+    if (r) { r.extracting = false; r.uploadError = e.message; }
+    setQueuePillStatus(id, 'Failed');
+    renderReviewList();
+  }
+}
+
+function setQueuePillStatus(localId, text) {
+  const item = document.querySelector(`.queue-item[data-qid="${localId}"]`);
+  if (item) item.querySelector('.queue-status').textContent = text;
+}
+
+function pollIncomingStatus(incomingId, localId) {
+  const iv = setInterval(async () => {
+    try {
+      const res  = await fetch(`/api/incoming-status/${incomingId}`);
+      const json = await res.json();
+      const r    = receipts.find(x => x.id === localId);
+      if (!r) { clearInterval(iv); return; }
+
+      if (json.status === 'done' && json.data) {
+        clearInterval(iv);
+        const d = json.data;
+        r.extracting      = false;
+        r.vendor          = d.vendor          || '';
+        r.invoice         = d.invoiceNo       || '';
+        r.amount          = d.total           || '';
+        r.jobId           = d.jobNo           || '';
+        r.invoiceDate     = d.date            || '';
+        r.poNumber        = d.poNumber        || '';
+        r.requiredDate    = d.requiredDate    || '';
+        r.vendorInvoiceNo = d.vendorInvoiceNo || '';
+        r.lineItems = (d.items || []).map(i => ({
+          vendorPartNo: i.vendorPartNo || '',
+          stPartNo:     i.stPartNo     || '',
+          desc:         i.desc         || i.description || '',
+          jobNo:        i.jobNo        || '',
+          qty:          i.qty          || i.quantity    || 1,
+          unit:         i.unit         || i.cost        || '0.00',
+          total:        i.total        || '0.00'
+        }));
+        if (d.receiptBlobUrl) r.fileURL = d.receiptBlobUrl;
+        setQueuePillStatus(localId, 'Extracted ✓');
+        renderReviewList();
+        if (selectedId === localId) showReviewDetails(r);
+
+      } else if (json.status === 'failed') {
+        clearInterval(iv);
+        r.extracting  = false;
+        r.uploadError = json.error || 'Processing failed';
+        setQueuePillStatus(localId, 'Failed');
+        renderReviewList();
+      }
+      // pending / processing → keep polling
+    } catch (_) { /* transient — keep polling */ }
+  }, 2500);
+}
+
+async function loadReceiptsFromDB() {
+  try {
+    const res = await fetch('/api/receipts-list');
+    if (!res.ok) return;
+    const json    = await res.json();
+    const dbRecs  = json.receipts || [];
+    const knownIds = new Set(receipts.filter(r => r.dbId).map(r => r.dbId));
+
+    let added = 0;
+    dbRecs.forEach(r => {
+      if (knownIds.has(r.id)) return;
+      receipts.push({
+        id:            'DB-' + r.id,
+        dbId:          r.id,
+        name:          r.file_name || ('Receipt ' + (r.invoice_no || r.id.slice(0, 6))),
+        size:          0,
+        type:          'application/pdf',
+        fileURL:       r.receipt_blob_url || '',
+        source:        'db',
+        date:          r.saved_at ? new Date(r.saved_at).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '',
+        savedDate:     r.saved_at || null,
+        status:        r.status === 'posted' ? 'saved' : 'pending',
+        extracting:    false,
+        vendor:        r.vendor         || '',
+        invoice:       r.invoice_no     || '',
+        amount:        r.total          || String(r.amount || ''),
+        jobId:         r.job_no         || '',
+        invoiceDate:   r.date           || '',
+        poNumber:      r.po_number      || '',
+        requiredDate:  r.required_date  || '',
+        vendorInvoiceNo: r.vendor_invoice_no || '',
+        lineItems: Array.isArray(r.items) ? r.items.map(i => ({
+          vendorPartNo: i.vendorPartNo || '',
+          stPartNo:     i.stPartNo     || '',
+          desc:         i.desc         || i.description || '',
+          jobNo:        i.jobNo        || '',
+          qty:          i.qty          || i.quantity    || 1,
+          unit:         i.unit         || i.cost        || '0.00',
+          total:        i.total        || '0.00'
+        })) : [],
+        stPurchaseOrderId: r.st_purchase_order_id || null
+      });
+      added++;
+    });
+
+    if (added > 0) {
+      renderReviewList();
+      renderHistoryList();
+      updateStats();
+    }
+  } catch (e) {
+    console.error('loadReceiptsFromDB failed:', e);
   }
 }
 
