@@ -528,11 +528,39 @@ function extractFieldsFromLlama(content) {
 
   // Parse structured JSON block emitted by the prompt's ---JSON--- directive
   let structured = null;
-  const jsonIdx = content.indexOf('\n---JSON---\n');
-  if (jsonIdx !== -1) {
-    try { structured = JSON.parse(content.slice(jsonIdx + 12).trim()); }
-    catch(e) { console.warn('[fields] JSON block parse failed:', e.message); }
+
+  // Try ---JSON--- separator (any surrounding whitespace)
+  const jsonSepMatch = content.match(/---JSON---\s*([\s\S]*?)(?:---|$)/);
+  if (jsonSepMatch) {
+    const raw = jsonSepMatch[1].trim();
+    const objMatch = raw.match(/\{[\s\S]*\}/);
+    try { structured = JSON.parse(objMatch ? objMatch[0] : raw); }
+    catch(e) { console.warn('[fields] ---JSON--- block parse failed:', e.message); }
   }
+
+  // Fallback: try ```json fences
+  if (!structured) {
+    const fenceMatch = content.match(/```json\s*([\s\S]*?)\s*```/);
+    if (fenceMatch) {
+      try { structured = JSON.parse(fenceMatch[1]); }
+      catch(e) { console.warn('[fields] ```json fence parse failed:', e.message); }
+    }
+  }
+
+  // Fallback: find the last large JSON object in the text
+  if (!structured) {
+    const allObjs = [...content.matchAll(/\{[\s\S]{100,}\}/g)];
+    for (const m of allObjs.reverse()) {
+      try {
+        const parsed = JSON.parse(m[0]);
+        if (parsed.poNumber !== undefined || parsed.vendorName !== undefined || parsed.lineItems) {
+          structured = parsed; break;
+        }
+      } catch(e) { /* skip */ }
+    }
+  }
+
+  console.log('[fields] structured JSON found:', !!structured, structured ? Object.keys(structured) : []);
 
   function parseTables(input) {
     const tbls = [];
