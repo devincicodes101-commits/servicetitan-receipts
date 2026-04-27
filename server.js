@@ -330,18 +330,8 @@ async function processIncomingForST(sb, incoming) {
     const fields = extractFieldsFromLlama(geminiOutput);
     console.log(`[process-st] ${rowId}: fields=`, JSON.stringify(fields));
 
-    let receiptBlobUrl = incoming.file_url;
-    if (process.env.BLOB_READ_WRITE_TOKEN) {
-      try {
-        const ext = mimeType === 'application/pdf' ? 'pdf' : (mimeType.split('/')[1] || 'jpg');
-        const blobResult = await blobPut(`receipts/st_${rowId}.${ext}`, fileBuffer, {
-          access: 'public', contentType: mimeType, token: process.env.BLOB_READ_WRITE_TOKEN
-        });
-        receiptBlobUrl = blobResult.url;
-      } catch (blobErr) {
-        console.error(`[process-st] ${rowId}: Blob upload failed:`, blobErr.message);
-      }
-    }
+    // File is already in Supabase Storage — use its public URL directly
+    const receiptBlobUrl = incoming.file_url;
 
     const receiptId = randomUUID();
     const { error: insertErr } = await sb.from('receipts').insert({
@@ -1823,24 +1813,28 @@ app.post('/api/queue-manual-upload', upload.single('receipt'), async (req, res) 
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    if (!process.env.BLOB_READ_WRITE_TOKEN) {
-      return res.status(503).json({ error: 'Blob storage not configured (BLOB_READ_WRITE_TOKEN missing)' });
-    }
-
     const { buffer: fileBuffer, mimetype: mimeType, originalname: fileName } = req.file;
     const ext = mimeType === 'application/pdf' ? 'pdf' : (mimeType.split('/')[1] || 'jpg');
-    const blobResult = await blobPut(`receipts/uploads/upload_${Date.now()}.${ext}`, fileBuffer, {
-      access: 'public', contentType: mimeType, token: process.env.BLOB_READ_WRITE_TOKEN
-    });
-    const fileUrl = blobResult.url;
+    const storagePath = `uploads/${Date.now()}_${fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}.${ext}`;
 
     const sb = await getSupabaseAdmin();
+
+    // Upload to Supabase Storage
+    const { error: storageErr } = await sb.storage
+      .from('receipts')
+      .upload(storagePath, fileBuffer, { contentType: mimeType, upsert: false });
+
+    if (storageErr) return res.status(500).json({ error: 'Storage upload failed: ' + storageErr.message });
+
+    const { data: { publicUrl: fileUrl } } = sb.storage.from('receipts').getPublicUrl(storagePath);
+
     const userId = (process.env.SYSTEM_USER_ID || '').trim() || null;
 
     const { data: row, error: insertErr } = await sb.from('incoming_receipts').insert({
       user_id: userId,
       file_url: fileUrl,
       file_name: fileName,
+      storage_path: storagePath,
       status: 'pending'
     }).select('id').single();
 
