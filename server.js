@@ -317,10 +317,22 @@ async function processIncomingForST(sb, incoming) {
   };
 
   try {
-    const fileRes = await fetch(incoming.file_url);
-    if (!fileRes.ok) { await markFailed(`Could not download file: HTTP ${fileRes.status}`); return; }
-    const fileBuffer = Buffer.from(await fileRes.arrayBuffer());
-    const mimeType = getMimeType(incoming.file_name, incoming.file_url);
+    let fileBuffer, mimeType;
+    mimeType = getMimeType(incoming.file_name, incoming.storage_path, incoming.file_url);
+
+    if (incoming.storage_path) {
+      // Download directly via service role — works regardless of bucket policy
+      const { data: fileData, error: dlErr } = await sb.storage
+        .from('receipts')
+        .download(incoming.storage_path);
+      if (dlErr) { await markFailed('Storage download failed: ' + dlErr.message); return; }
+      fileBuffer = Buffer.from(await fileData.arrayBuffer());
+    } else {
+      // Fallback: public URL fetch
+      const fileRes = await fetch(incoming.file_url);
+      if (!fileRes.ok) { await markFailed(`Could not download file: HTTP ${fileRes.status}`); return; }
+      fileBuffer = Buffer.from(await fileRes.arrayBuffer());
+    }
 
     console.log(`[process-st] ${rowId}: ${fileBuffer.length} bytes, mime=${mimeType}`);
 
