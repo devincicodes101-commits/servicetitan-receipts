@@ -769,20 +769,20 @@ function extractFieldsFromLlama(content) {
     const val = (lmap[lbl] || '').trim();
     if (!val) continue;
 
-    let m = val.match(/^(\d{3,7})$/);
+    let m = val.match(/^(\d{3,9})$/);
     if (m) {
       jobNo = m[1];
       break;
     }
 
     // Handle "1095 - RETURN", "1391-CREDIT" etc. with optional spaces around dash
-    m = val.match(/^(\d{3,7})\s*[-–]\s*[A-Z]/i);
+    m = val.match(/^(\d{3,9})\s*[-–]\s*[A-Z]/i);
     if (m) {
       jobNo = m[1];
       break;
     }
 
-    m = val.match(/^(\d{3,7})[-\s]/);
+    m = val.match(/^(\d{3,9})[-\s]/);
     if (m) {
       jobNo = m[1];
       break;
@@ -793,15 +793,15 @@ function extractFieldsFromLlama(content) {
   // Handles "PO Number\n1180", "YOUR P.O. NO 1456", "PO Number | 1180" etc.
   if (!jobNo) {
     const poMatch =
-      content.match(/\bP\.?\s*O\.?\s*(?:Number|No|NO|#|NUM|NUMBER)\b[^\d]{0,120}?(\d{3,7})\b/i) ||
-      content.match(/\bYour\s+P\.?\s*O\.?\s*(?:No|NO|Number)\b[^\d]{0,120}?(\d{3,7})\b/i) ||
-      content.match(/\bPurchase\s*Order\b[^\d]{0,120}?(\d{3,7})\b/i);
+      content.match(/\bP\.?\s*O\.?\s*(?:Number|No|NO|#|NUM|NUMBER)\b[^\d]{0,120}?(\d{3,9})\b/i) ||
+      content.match(/\bYour\s+P\.?\s*O\.?\s*(?:No|NO|Number)\b[^\d]{0,120}?(\d{3,9})\b/i) ||
+      content.match(/\bPurchase\s*Order\b[^\d]{0,120}?(\d{3,9})(?:-\d+)?\b/i);
     if (poMatch) jobNo = poMatch[1];
   }
 
   // Fallback: scan raw text for NNNN-RETURN / NNNN-CREDIT patterns
   if (!jobNo) {
-    const returnMatch = content.match(/\b(\d{3,7})[-–]\s*(?:RETURN|CREDIT|RMA|VOID)\b/i);
+    const returnMatch = content.match(/\b(\d{3,9})[-–]\s*(?:RETURN|CREDIT|RMA|VOID)\b/i);
     if (returnMatch) jobNo = returnMatch[1];
   }
 
@@ -955,6 +955,12 @@ function extractFieldsFromLlama(content) {
     if (structured.totalAmount)    total     = structured.totalAmount;
     if (structured.poNumber)       poNumber  = structured.poNumber;
     if (structured.requiredDate)   requiredDate = parseDate(structured.requiredDate);
+    // Extract jobNo from line items if not already found (e.g. ServiceTitan 8-digit job numbers)
+    if (!jobNo && Array.isArray(structured.lineItems)) {
+      for (const li of structured.lineItems) {
+        if (li.jobNo) { jobNo = String(li.jobNo); break; }
+      }
+    }
     if (Array.isArray(structured.lineItems) && structured.lineItems.length) {
       items.length = 0;
       structured.lineItems.forEach(li => {
