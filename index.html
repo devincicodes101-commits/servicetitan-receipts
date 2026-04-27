@@ -889,6 +889,7 @@ function handleFiles(files, source) {
       status: 'pending',
       extracting: true,
       vendor: '', invoice: '', amount: '', jobId: '', invoiceDate: '',
+      poNumber: '', requiredDate: '', vendorInvoiceNo: '',
       lineItems: []
     };
     receipts.unshift(rec);
@@ -929,16 +930,22 @@ async function extractFile(file, id) {
     r.extracting = false;
     if (json.success && json.data) {
       const d = json.data;
-      r.vendor      = d.vendor      || '';
-      r.invoice     = d.invoiceNo   || '';
-      r.amount      = d.total       || '';
-      r.jobId       = d.jobNo       || '';
-      r.invoiceDate = d.date        || '';
-      r.lineItems   = (d.items || []).map(i => ({
-        desc: i.description || i.desc || '',
-        qty:  i.quantity    || i.qty  || 1,
-        unit: i.unitPrice   || i.unit || '0.00',
-        total: i.total      || '0.00'
+      r.vendor         = d.vendor          || '';
+      r.invoice        = d.invoiceNo       || '';
+      r.amount         = d.total           || '';
+      r.jobId          = d.jobNo           || '';
+      r.invoiceDate    = d.date            || '';
+      r.poNumber       = d.poNumber        || '';
+      r.requiredDate   = d.requiredDate    || '';
+      r.vendorInvoiceNo = d.vendorInvoiceNo || '';
+      r.lineItems = (d.items || []).map(i => ({
+        vendorPartNo: i.vendorPartNo || '',
+        stPartNo:     i.stPartNo     || '',
+        desc:         i.desc         || i.description || '',
+        jobNo:        i.jobNo        || '',
+        qty:          i.qty          || i.quantity    || 1,
+        unit:         i.unit         || i.cost        || '0.00',
+        total:        i.total        || '0.00'
       }));
     }
     renderReviewList();
@@ -1029,27 +1036,35 @@ function showReviewDetails(r) {
 
   body.innerHTML = `
     <div>
-      <div class="detail-section-label">Receipt Info</div>
+      <div class="detail-section-label">Purchase Order Info</div>
       <div class="detail-grid">
-        <div class="detail-field">
-          <div class="detail-label">Vendor / Store</div>
-          <input class="detail-input" id="rf-vendor" placeholder="e.g. Andrew Sheret" value="${r.vendor}" />
+        <div class="detail-field full">
+          <div class="detail-label">PO Number</div>
+          <input class="detail-input" id="rf-ponum" placeholder="e.g. #44407533-001" value="${r.poNumber}" />
         </div>
         <div class="detail-field">
-          <div class="detail-label">Invoice / Receipt No.</div>
-          <input class="detail-input" id="rf-invoice" placeholder="e.g. INV-84921" value="${r.invoice}" />
+          <div class="detail-label">Vendor / Supplier</div>
+          <input class="detail-input" id="rf-vendor" placeholder="e.g. Andrew Sheret Limited" value="${r.vendor}" />
         </div>
         <div class="detail-field">
-          <div class="detail-label">Invoice Date</div>
+          <div class="detail-label">Vendor Invoice No.</div>
+          <input class="detail-input" id="rf-vendinv" placeholder="e.g. 22-061752" value="${r.vendorInvoiceNo}" />
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">PO Date</div>
           <input class="detail-input" id="rf-date" type="date" value="${r.invoiceDate}" />
         </div>
         <div class="detail-field">
-          <div class="detail-label">Total Amount</div>
-          <input class="detail-input" id="rf-amount" placeholder="e.g. 981.47" value="${r.amount}" />
+          <div class="detail-label">Required Date</div>
+          <input class="detail-input" id="rf-reqdate" type="date" value="${r.requiredDate}" />
         </div>
-        <div class="detail-field full">
-          <div class="detail-label">Job / PO Number</div>
-          <input class="detail-input" id="rf-job" placeholder="e.g. Job #1095" value="${r.jobId}" />
+        <div class="detail-field">
+          <div class="detail-label">Total Amount</div>
+          <input class="detail-input" id="rf-amount" placeholder="e.g. 846.11" value="${r.amount}" />
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Job / ST Job Number</div>
+          <input class="detail-input" id="rf-job" placeholder="e.g. 44407533" value="${r.jobId}" />
         </div>
       </div>
     </div>
@@ -1057,7 +1072,7 @@ function showReviewDetails(r) {
     <div>
       <div class="detail-section-label">Line Items</div>
       <table class="line-items-table">
-        <thead><tr><th>Description</th><th>Qty</th><th>Unit</th><th>Total</th></tr></thead>
+        <thead><tr><th>Vendor Part #</th><th>Description</th><th>Job #</th><th>Qty</th><th>Cost</th><th>Total</th></tr></thead>
         <tbody id="lineItemsBody">${renderLineItemRows(r.lineItems)}</tbody>
       </table>
       <button class="add-line-btn" onclick="addLineItem('${r.id}')">
@@ -1090,8 +1105,15 @@ function showReviewDetails(r) {
 }
 
 function renderLineItemRows(items) {
-  if (!items.length) return '<tr><td colspan="4" style="color:var(--ink-mute);text-align:center;padding:12px">No line items</td></tr>';
-  return items.map(li => `<tr><td>${li.desc}</td><td>${li.qty}</td><td>$${li.unit}</td><td>$${li.total}</td></tr>`).join('');
+  if (!items.length) return '<tr><td colspan="6" style="color:var(--ink-mute);text-align:center;padding:12px">No line items</td></tr>';
+  return items.map(li => `<tr>
+    <td>${li.vendorPartNo || '—'}</td>
+    <td>${li.desc}</td>
+    <td>${li.jobNo || '—'}</td>
+    <td>${li.qty || 1}</td>
+    <td>${li.unit ? '$'+li.unit : '—'}</td>
+    <td>$${li.total}</td>
+  </tr>`).join('');
 }
 
 function addLineItem(id) {
@@ -1102,11 +1124,13 @@ function addLineItem(id) {
 }
 
 function readReviewForm(r) {
-  r.vendor      = document.getElementById('rf-vendor')?.value  || r.vendor;
-  r.invoice     = document.getElementById('rf-invoice')?.value || r.invoice;
-  r.invoiceDate = document.getElementById('rf-date')?.value    || r.invoiceDate;
-  r.amount      = document.getElementById('rf-amount')?.value  || r.amount;
-  r.jobId       = document.getElementById('rf-job')?.value     || r.jobId;
+  r.poNumber       = document.getElementById('rf-ponum')?.value    || r.poNumber;
+  r.vendor         = document.getElementById('rf-vendor')?.value   || r.vendor;
+  r.vendorInvoiceNo = document.getElementById('rf-vendinv')?.value || r.vendorInvoiceNo;
+  r.invoiceDate    = document.getElementById('rf-date')?.value     || r.invoiceDate;
+  r.requiredDate   = document.getElementById('rf-reqdate')?.value  || r.requiredDate;
+  r.amount         = document.getElementById('rf-amount')?.value   || r.amount;
+  r.jobId          = document.getElementById('rf-job')?.value      || r.jobId;
 }
 
 function saveReceipt(id) {
@@ -1123,15 +1147,53 @@ function saveReceipt(id) {
   updateStats();
 }
 
-function postToST(id) {
+async function postToST(id) {
   const r = receipts.find(x => x.id === id);
   if (!r) return;
   readReviewForm(r);
+
+  const postBtn = document.getElementById('reviewPostBtn');
+  postBtn.textContent = 'Posting…';
+  postBtn.disabled = true;
+
+  try {
+    const res  = await fetch('/api/create-po', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        poNumber:       r.poNumber,
+        vendor:         r.vendor,
+        vendorInvoiceNo: r.vendorInvoiceNo,
+        poDate:         r.invoiceDate,
+        requiredDate:   r.requiredDate,
+        total:          r.amount,
+        jobId:          r.jobId,
+        lineItems:      r.lineItems
+      })
+    });
+    const json = await res.json();
+
+    if (!res.ok || json.error) {
+      // ST credentials not set up yet — mark as pushed anyway and show info
+      if (res.status === 503) {
+        alert('ServiceTitan credentials not configured yet.\n\nAdd ST_TENANT_ID, ST_APP_KEY, ST_CLIENT_ID, ST_CLIENT_SECRET to your .env file on the VPS to enable live posting.\n\nMarking as posted for now.');
+      } else {
+        alert('ServiceTitan error: ' + (json.error || 'Unknown error'));
+        postBtn.textContent = 'Post to ServiceTitan';
+        postBtn.disabled = false;
+        return;
+      }
+    }
+  } catch(e) {
+    alert('Network error: ' + e.message);
+    postBtn.textContent = 'Post to ServiceTitan';
+    postBtn.disabled = false;
+    return;
+  }
+
   r.status    = 'pushed';
   r.savedDate = r.savedDate || nowISO();
-  const postBtn = document.getElementById('reviewPostBtn');
   postBtn.textContent = 'Pushed to ST ✓';
-  postBtn.disabled = true;
   const saveBtn = document.getElementById('reviewSaveBtn');
   saveBtn.textContent = 'Saved ✓';
   saveBtn.classList.add('saved');

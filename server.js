@@ -526,6 +526,14 @@ function extractFieldsFromLlama(content) {
   let vendor = null, invoiceNo = null, date = null, jobNo = null, total = null;
   const items = [];
 
+  // Parse structured JSON block emitted by the prompt's ---JSON--- directive
+  let structured = null;
+  const jsonIdx = content.indexOf('\n---JSON---\n');
+  if (jsonIdx !== -1) {
+    try { structured = JSON.parse(content.slice(jsonIdx + 12).trim()); }
+    catch(e) { console.warn('[fields] JSON block parse failed:', e.message); }
+  }
+
   function parseTables(input) {
     const tbls = [];
 
@@ -906,8 +914,35 @@ function extractFieldsFromLlama(content) {
     total = Math.round(itemsSum * 100) / 100;
   }
 
-  console.log('[fields] extracted:', { vendor, invoiceNo, date, jobNo, total, itemCount: items.length });
-  return { vendor, invoiceNo, date, jobNo, total, items };
+  // Merge structured JSON (higher priority — Gemini read the doc directly)
+  let poNumber = null, requiredDate = null, vendorInvoiceNo = null;
+  if (structured) {
+    if (structured.vendorName)     vendor    = structured.vendorName;
+    if (structured.vendorInvoiceNo) { invoiceNo = structured.vendorInvoiceNo; vendorInvoiceNo = structured.vendorInvoiceNo; }
+    if (structured.poDate)         date      = parseDate(structured.poDate) || date;
+    if (structured.totalAmount)    total     = structured.totalAmount;
+    if (structured.poNumber)       poNumber  = structured.poNumber;
+    if (structured.requiredDate)   requiredDate = parseDate(structured.requiredDate);
+    if (Array.isArray(structured.lineItems) && structured.lineItems.length) {
+      items.length = 0;
+      structured.lineItems.forEach(li => {
+        if (li.description || li.total) {
+          items.push({
+            vendorPartNo: li.vendorPartNo || '',
+            stPartNo:     li.stPartNo     || '',
+            desc:         li.description  || '',
+            jobNo:        li.jobNo        || '',
+            qty:          li.quantity     || 1,
+            unit:         li.cost         || null,
+            total:        li.total        || 0
+          });
+        }
+      });
+    }
+  }
+
+  console.log('[fields] extracted:', { vendor, invoiceNo, date, jobNo, total, poNumber, requiredDate, itemCount: items.length });
+  return { vendor, invoiceNo, date, jobNo, total, items, poNumber, requiredDate, vendorInvoiceNo };
 }
 
 // ── Gemini SDK loader ──
@@ -968,7 +1003,11 @@ TRAILING MINUS / CREDIT NOTATION (STRICT):
 - STRICT RULE: If a number has a trailing minus in the original document, you MUST output it as a negative number (e.g. "807.91-" → "-807.91"). Never drop the minus sign.
 - STRICT RULE: If a number does NOT have a trailing minus or a leading minus in the original document, you MUST output it as a positive number. Never add a minus sign that is not printed.
 - Apply this to ALL columns: QTY, NET PRICE, TOTAL, GROSS TOTAL, G.S.T., P.S.T., and the grand total.
-- If the document is labelled "CREDIT", "RETURN", or "CREDIT - DO NOT PAY", verify all totals have trailing minus signs and output them as negative.`;
+- If the document is labelled "CREDIT", "RETURN", or "CREDIT - DO NOT PAY", verify all totals have trailing minus signs and output them as negative.
+
+After all document content above, write a line containing only ---JSON--- then a single JSON object (no markdown fences, no extra text):
+{"poNumber":"","poDate":"","requiredDate":"","vendorName":"","vendorInvoiceNo":"","totalAmount":0,"lineItems":[{"vendorPartNo":"","stPartNo":"","description":"","jobNo":"","cost":0,"quantity":1,"total":0}]}
+Fill every field from the document. Use empty string for missing text, 0 for missing numbers, YYYY-MM-DD for dates. For lineItems, include one entry per product/material row.`;
 
   if (mimeType === 'application/pdf') {
     // Upload via Files API so Gemini processes every page of the PDF
@@ -1060,13 +1099,16 @@ app.post('/api/extract', upload.single('receipt'), async (req, res) => {
         imageDataUrl,
         receiptBlobUrl,
         isPdf: mimeType === 'application/pdf',
-        vendor: fields.vendor || null,
-        invoiceNo: fields.invoiceNo || null,
-        date: fields.date || null,
-        total: fields.total || null,
-        jobNo: fields.jobNo || null,
-        jobStatus: fields.jobNo ? 'found' : 'missing',
-        items: fields.items || [],
+        vendor:          fields.vendor          || null,
+        invoiceNo:       fields.invoiceNo       || null,
+        date:            fields.date            || null,
+        total:           fields.total           || null,
+        jobNo:           fields.jobNo           || null,
+        jobStatus:       fields.jobNo ? 'found' : 'missing',
+        items:           fields.items           || [],
+        poNumber:        fields.poNumber        || null,
+        requiredDate:    fields.requiredDate    || null,
+        vendorInvoiceNo: fields.vendorInvoiceNo || null,
       }
     });
   } catch (err) {
@@ -1382,6 +1424,73 @@ app.post('/api/process-queue-item', async (req, res) => {
     const result = await processOneQueueRow(sb, row);
     return res.json({ success: true, result });
   } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── ServiceTitan: create purchase order ──
+app.post('/api/create-po', async (req, res) => {
+  try {
+    const { poNumber, vendor, vendorInvoiceNo, poDate, requiredDate, total, jobId, lineItems } = req.body || {};
+
+    const ST_TENANT_ID     = (process.env.ST_TENANT_ID     || '').trim();
+    const ST_APP_KEY       = (process.env.ST_APP_KEY       || '').trim();
+    const ST_CLIENT_ID     = (process.env.ST_CLIENT_ID     || '').trim();
+    const ST_CLIENT_SECRET = (process.env.ST_CLIENT_SECRET || '').trim();
+
+    if (!ST_TENANT_ID || !ST_APP_KEY || !ST_CLIENT_ID || !ST_CLIENT_SECRET) {
+      return res.status(503).json({
+        error: 'ServiceTitan credentials not configured. Add ST_TENANT_ID, ST_APP_KEY, ST_CLIENT_ID, ST_CLIENT_SECRET to .env'
+      });
+    }
+
+    // Get OAuth token
+    const tokenRes = await fetch('https://auth.servicetitan.io/connect/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type:    'client_credentials',
+        client_id:     ST_CLIENT_ID,
+        client_secret: ST_CLIENT_SECRET
+      })
+    });
+    const tokenData = await tokenRes.json();
+    if (!tokenData.access_token) {
+      return res.status(401).json({ error: 'ServiceTitan auth failed: ' + (tokenData.error_description || tokenData.error || 'unknown') });
+    }
+
+    const poBody = {
+      number:       poNumber   || undefined,
+      requiredDate: requiredDate || undefined,
+      memo:         vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined,
+      items: (lineItems || []).map(li => ({
+        description: li.desc     || '',
+        quantity:    li.qty      || 1,
+        cost:        li.unit     || 0,
+        ...(li.jobNo ? { jobId: parseInt(li.jobNo) || undefined } : {})
+      }))
+    };
+
+    if (jobId) poBody.jobId = parseInt(jobId) || undefined;
+
+    const poRes = await fetch(`https://api.servicetitan.io/inventory/v2/tenant/${ST_TENANT_ID}/purchase-orders`, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + tokenData.access_token,
+        'ST-App-Key':    ST_APP_KEY,
+        'Content-Type':  'application/json'
+      },
+      body: JSON.stringify(poBody)
+    });
+
+    const poData = await poRes.json();
+    if (!poRes.ok) {
+      return res.status(poRes.status).json({ error: poData.title || 'ServiceTitan API error', details: poData });
+    }
+
+    return res.json({ success: true, poId: poData.id, poNumber: poData.number });
+  } catch (err) {
+    console.error('[create-po] error:', err);
     return res.status(500).json({ error: err.message });
   }
 });
