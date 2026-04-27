@@ -245,6 +245,7 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
 .tri-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: #666; text-align: center; flex: 1; }
 .tri-empty svg { width: 44px; height: 44px; opacity: .25; }
 .tri-empty p { font-size: 13px; color: var(--ink-mute); }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* ============ GMAIL PAGE ============ */
 .gmail-page { padding: 28px 32px; display: flex; flex-direction: column; gap: 24px; overflow-y: auto; }
@@ -883,9 +884,10 @@ function handleFiles(files, source) {
     const fileURL = URL.createObjectURL(f);
     const rec = {
       id, name: f.name, size: f.size, type: f.type, fileURL,
-      source: source === 'review' ? 'upload' : 'upload',
+      source: 'upload',
       date: nowFull(), savedDate: null,
-      status: 'pending',    // pending | saved | pushed
+      status: 'pending',
+      extracting: true,
       vendor: '', invoice: '', amount: '', jobId: '', invoiceDate: '',
       lineItems: []
     };
@@ -901,17 +903,51 @@ function handleFiles(files, source) {
       item.innerHTML = `
         <div class="queue-icon">${fileTypeLabel(f)}</div>
         <div class="queue-info"><div class="queue-name">${f.name}</div><div class="queue-size">${sz}</div></div>
-        <div class="queue-status" style="color:var(--ink-mute)">Ready →</div>`;
+        <div class="queue-status" style="color:var(--ink-mute)">Extracting…</div>`;
       queue.appendChild(item);
     }
+
+    // auto-extract via Gemini OCR
+    extractFile(f, id);
   });
 
   updateStats();
   renderFeed('all');
   document.querySelector('.feed-tab[data-feed="all"]').click();
 
-  // navigate to review queue
   setTimeout(() => navigate('review'), source === 'dashboard' ? 600 : 0);
+}
+
+async function extractFile(file, id) {
+  const fd = new FormData();
+  fd.append('receipt', file);
+  try {
+    const res  = await fetch('/api/extract', { method: 'POST', body: fd });
+    const json = await res.json();
+    const r    = receipts.find(x => x.id === id);
+    if (!r) return;
+    r.extracting = false;
+    if (json.success && json.data) {
+      const d = json.data;
+      r.vendor      = d.vendor      || '';
+      r.invoice     = d.invoiceNo   || '';
+      r.amount      = d.total       || '';
+      r.jobId       = d.jobNo       || '';
+      r.invoiceDate = d.date        || '';
+      r.lineItems   = (d.items || []).map(i => ({
+        desc: i.description || i.desc || '',
+        qty:  i.quantity    || i.qty  || 1,
+        unit: i.unitPrice   || i.unit || '0.00',
+        total: i.total      || '0.00'
+      }));
+    }
+    renderReviewList();
+    if (selectedId === id) showReviewDetails(r);
+  } catch (e) {
+    const r = receipts.find(x => x.id === id);
+    if (r) r.extracting = false;
+    renderReviewList();
+  }
 }
 
 // ============================================================
@@ -985,6 +1021,11 @@ function showReviewDetails(r) {
   const body = document.getElementById('reviewDetailsBody');
   const actions = document.getElementById('reviewActions');
   actions.style.display = 'flex';
+
+  if (r.extracting) {
+    body.innerHTML = `<div class="tri-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="animation:spin 1s linear infinite;width:28px;height:28px"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg><p style="margin-top:10px">Extracting details…</p></div>`;
+    return;
+  }
 
   body.innerHTML = `
     <div>
