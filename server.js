@@ -492,7 +492,11 @@ app.use(async (req, res, next) => {
     '/api/auth/jobber',
     '/api/auth/callback',
     '/api/jobber-status',
-    '/api/jobber-debug'
+    '/api/jobber-debug',
+    '/api/extract',
+    '/api/extract-url',
+    '/api/create-po',
+    '/api/create-expense'
   ];
 
   if (!req.path.startsWith('/api/') || open.includes(req.path)) return next();
