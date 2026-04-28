@@ -282,6 +282,30 @@ async function processOneRow(sb, incoming) {
   }
 }
 
+// ── n8n endpoint: POST { rowId } → process a specific upload_queue row (Gmail receipts) ──
+app.post('/api/process-queue-row', async (req, res) => {
+  const secret = (process.env.PROCESS_SECRET || '').trim();
+  const provided = (req.headers['x-process-secret'] || '').trim();
+  if (secret && provided !== secret) return res.status(401).json({ error: 'Unauthorized' });
+
+  const rowId = (req.body || {}).rowId;
+  if (!rowId) return res.status(400).json({ error: 'Missing rowId' });
+
+  const sb = await getSupabaseAdmin();
+  const { data: row } = await sb.from('upload_queue').select('*').eq('id', rowId).single();
+  if (!row) return res.status(404).json({ error: 'Row not found' });
+  if (row.status !== 'pending') return res.json({ success: true, message: `Row already ${row.status}` });
+
+  const { data: claimed } = await sb.from('upload_queue')
+    .update({ status: 'processing' })
+    .eq('id', rowId).eq('status', 'pending').select('id');
+
+  if (!claimed || claimed.length === 0) return res.json({ success: true, message: 'Already claimed' });
+
+  const result = await processOneQueueRow(sb, row);
+  return res.json(result);
+});
+
 // ── n8n endpoint: POST { rowId } → Vercel downloads file directly from Supabase ──
 app.post('/api/process-incoming-row', async (req, res) => {
   const secret = (process.env.PROCESS_SECRET || '').trim();
@@ -602,7 +626,7 @@ app.use('/api/inngest', serve({
 
 // ── Auth middleware — verifies Supabase JWT ──
 app.use(async (req, res, next) => {
-  if (req.path === '/api/process-incoming' || req.path === '/api/process-queue' || req.path === '/api/process-incoming-row') return next();
+  if (req.path === '/api/process-incoming' || req.path === '/api/process-queue' || req.path === '/api/process-incoming-row' || req.path === '/api/process-queue-row') return next();
   if (req.path.startsWith('/api/inngest')) return next();
   const open = [
     '/api/config',
