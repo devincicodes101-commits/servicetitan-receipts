@@ -316,18 +316,18 @@ app.post('/api/process-incoming-row', async (req, res) => {
   if (!rowId) return res.status(400).json({ error: 'Missing rowId' });
 
   const sb = await getSupabaseAdmin();
-  const { data: row } = await sb.from('incoming_receipts').select('*').eq('id', rowId).single();
+  const { data: row } = await sb.from('upload_queue').select('*').eq('id', rowId).single();
   if (!row) return res.status(404).json({ error: 'Row not found' });
   if (row.status !== 'pending') return res.json({ success: true, message: `Row already ${row.status}` });
 
-  const { data: claimed } = await sb.from('incoming_receipts')
+  const { data: claimed } = await sb.from('upload_queue')
     .update({ status: 'processing' })
     .eq('id', rowId).eq('status', 'pending').select('id');
 
   if (!claimed || claimed.length === 0) return res.json({ success: true, message: 'Already claimed' });
 
-  await processIncomingForST(sb, row);
-  return res.json({ success: true, id: rowId });
+  const result = await processOneQueueRow(sb, row);
+  return res.json(result);
 });
 
 // ── Process a manually-uploaded receipt for ServiceTitan (background) ──
