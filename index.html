@@ -1025,9 +1025,15 @@ function pollIncomingStatus(incomingId, localId) {
           total:        i.total        || '0.00'
         }));
         if (d.receiptBlobUrl) r.fileURL = d.receiptBlobUrl;
+        if (d.receiptId) r.dbId = d.receiptId;
         setQueuePillStatus(localId, 'Extracted ✓');
         renderReviewList();
-        if (selectedId === localId) showReviewDetails(r);
+        // Auto-navigate to Review and open the receipt
+        showView('review');
+        selectedId = localId;
+        renderReviewList();
+        showPreview(r, 'review');
+        showReviewDetails(r);
 
       } else if (json.status === 'failed') {
         clearInterval(iv);
@@ -1043,54 +1049,95 @@ function pollIncomingStatus(incomingId, localId) {
 
 async function loadReceiptsFromDB() {
   try {
-    const res = await fetch('/api/receipts-list');
-    if (!res.ok) return;
-    const json    = await res.json();
-    const dbRecs  = json.receipts || [];
-    const knownIds = new Set(receipts.filter(r => r.dbId).map(r => r.dbId));
+    const knownDbIds    = new Set(receipts.filter(r => r.dbId).map(r => r.dbId));
+    const knownGmailIds = new Set(receipts.filter(r => r.gmailId).map(r => r.gmailId));
 
-    let added = 0;
-    dbRecs.forEach(r => {
-      if (knownIds.has(r.id)) return;
-      receipts.push({
-        id:            'DB-' + r.id,
-        dbId:          r.id,
-        name:          r.file_name || ('Receipt ' + (r.invoice_no || r.id.slice(0, 6))),
-        size:          0,
-        type:          'application/pdf',
-        fileURL:       r.receipt_blob_url || '',
-        source:        'db',
-        date:          r.saved_at ? new Date(r.saved_at).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '',
-        savedDate:     r.saved_at || null,
-        status:        r.status === 'posted' ? 'saved' : 'pending',
-        extracting:    false,
-        vendor:        r.vendor         || '',
-        invoice:       r.invoice_no     || '',
-        amount:        r.total          || String(r.amount || ''),
-        jobId:         r.job_no         || '',
-        invoiceDate:   r.date           || '',
-        poNumber:      r.po_number      || '',
-        requiredDate:  r.required_date  || '',
-        vendorInvoiceNo: r.vendor_invoice_no || '',
-        lineItems: Array.isArray(r.items) ? r.items.map(i => ({
-          vendorPartNo: i.vendorPartNo || '',
-          stPartNo:     i.stPartNo     || '',
-          desc:         i.desc         || i.description || '',
-          jobNo:        i.jobNo        || '',
-          qty:          i.qty          || i.quantity    || 1,
-          unit:         i.unit         || i.cost        || '0.00',
-          total:        i.total        || '0.00'
-        })) : [],
-        stPurchaseOrderId: r.st_purchase_order_id || null
+    // ── Manual receipts from `receipts` table ──
+    const manualRes = await fetch('/api/receipts-list');
+    if (manualRes.ok) {
+      const { receipts: dbRecs = [] } = await manualRes.json();
+      dbRecs.forEach(r => {
+        if (knownDbIds.has(r.id)) return;
+        const localStatus = r.status === 'posted' || r.status === 'pushed' ? 'pushed'
+          : r.status === 'saved' ? 'saved'
+          : 'pending';
+        receipts.push({
+          id:            'DB-' + r.id,
+          dbId:          r.id,
+          name:          r.file_name || ('Receipt ' + (r.invoice_no || r.id.slice(0, 6))),
+          size:          0,
+          type:          'application/pdf',
+          fileURL:       r.receipt_blob_url || '',
+          source:        'manual',
+          date:          r.saved_at ? new Date(r.saved_at).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '',
+          savedDate:     r.saved_at || null,
+          status:        localStatus,
+          extracting:    false,
+          vendor:        r.vendor              || '',
+          invoice:       r.invoice_no          || '',
+          amount:        r.total               || String(r.amount || ''),
+          jobId:         r.job_no              || '',
+          invoiceDate:   r.date                || '',
+          poNumber:      r.po_number           || '',
+          requiredDate:  r.required_date       || '',
+          vendorInvoiceNo: r.vendor_invoice_no || '',
+          lineItems: Array.isArray(r.items) ? r.items.map(i => ({
+            vendorPartNo: i.vendorPartNo || '',
+            stPartNo:     i.stPartNo     || '',
+            desc:         i.desc         || i.description || '',
+            jobNo:        i.jobNo        || '',
+            qty:          i.qty          || i.quantity    || 1,
+            unit:         i.unit         || i.cost        || '0.00',
+            total:        i.total        || '0.00'
+          })) : [],
+          stPurchaseOrderId: r.st_purchase_order_id || null
+        });
       });
-      added++;
-    });
-
-    if (added > 0) {
-      renderReviewList();
-      renderHistoryList();
-      updateStats();
     }
+
+    // ── Gmail receipts from `upload_queue` table ──
+    const gmailRes = await fetch('/api/gmail-receipts');
+    if (gmailRes.ok) {
+      const { receipts: gmailRecs = [] } = await gmailRes.json();
+      gmailRecs.forEach(r => {
+        if (knownGmailIds.has(r.id)) return;
+        receipts.push({
+          id:         'GMAIL-' + r.id,
+          gmailId:    r.id,
+          name:       r.file_name || ('Gmail receipt ' + r.id.slice(0, 6)),
+          size:       0,
+          type:       'application/pdf',
+          fileURL:    r.file_url || '',
+          source:     'gmail',
+          date:       r.processed_at ? new Date(r.processed_at).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '',
+          savedDate:  r.processed_at || null,
+          status:     'saved',
+          extracting: false,
+          vendor:     r.vendor     || '',
+          invoice:    r.invoice_no || '',
+          amount:     String(r.amount || ''),
+          jobId:      r.job_no     || '',
+          invoiceDate: r.date      || '',
+          poNumber:   '',
+          requiredDate: '',
+          vendorInvoiceNo: r.invoice_no || '',
+          lineItems: Array.isArray(r.items) ? r.items.map(i => ({
+            vendorPartNo: i.vendorPartNo || '',
+            stPartNo:     i.stPartNo     || '',
+            desc:         i.desc         || i.description || '',
+            jobNo:        i.jobNo        || '',
+            qty:          i.qty          || i.quantity    || 1,
+            unit:         i.unit         || i.cost        || '0.00',
+            total:        i.total        || '0.00'
+          })) : [],
+          stPurchaseOrderId: null
+        });
+      });
+    }
+
+    renderReviewList();
+    renderHistoryList();
+    updateStats();
   } catch (e) {
     console.error('loadReceiptsFromDB failed:', e);
   }
@@ -1114,8 +1161,8 @@ function renderReviewList() {
     const item = document.createElement('div');
     item.className = 'rec-item' + (r.id === selectedId ? ' active' : '');
     item.dataset.id = r.id;
-    const typeLabel = r.type === 'application/pdf' ? 'PDF' : r.type.split('/')[1].toUpperCase().slice(0,4);
-    const isImg = r.type.startsWith('image/');
+    const typeLabel = r.type === 'application/pdf' ? 'PDF' : (r.type || '').split('/')[1]?.toUpperCase().slice(0,4) || 'FILE';
+    const isImg = (r.type || '').startsWith('image/');
     item.innerHTML = `
       <div class="rec-icon ${isImg ? 'img-icon' : ''}">${typeLabel}</div>
       <div class="rec-body">
@@ -1272,7 +1319,7 @@ function readReviewForm(r) {
   r.jobId          = document.getElementById('rf-job')?.value      || r.jobId;
 }
 
-function saveReceipt(id) {
+async function saveReceipt(id) {
   const r = receipts.find(x => x.id === id);
   if (!r) return;
   readReviewForm(r);
@@ -1282,8 +1329,17 @@ function saveReceipt(id) {
   btn.textContent = 'Saved ✓';
   btn.classList.add('saved');
   renderReviewList();
+  renderHistoryList();
   renderFeed('all');
   updateStats();
+  // Persist to DB
+  if (r.dbId) {
+    fetch('/api/receipt-status', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: r.dbId, status: 'saved' })
+    }).catch(() => {});
+  }
 }
 
 async function postToST(id) {
@@ -1340,6 +1396,14 @@ async function postToST(id) {
   renderHistoryList();
   renderFeed('all');
   updateStats();
+  // Persist to DB
+  if (r.dbId) {
+    fetch('/api/receipt-status', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: r.dbId, status: 'pushed', stPurchaseOrderId: r.stPurchaseOrderId || null })
+    }).catch(() => {});
+  }
 }
 
 // ============================================================
@@ -1373,15 +1437,16 @@ function renderHistoryList() {
     const item = document.createElement('div');
     item.className = 'rec-item' + (r.id === selectedId ? ' active' : '');
     item.dataset.id = r.id;
-    const typeLabel = r.type === 'application/pdf' ? 'PDF' : r.type.split('/')[1].toUpperCase().slice(0,4);
-    const isImg = r.type.startsWith('image/');
+    const typeLabel = r.type === 'application/pdf' ? 'PDF' : (r.type || '').split('/')[1]?.toUpperCase().slice(0,4) || 'FILE';
+    const isImg = (r.type || '').startsWith('image/');
     const badgeClass = r.status === 'pushed' ? 'pushed' : 'saved';
-    const badgeText  = r.status === 'pushed' ? 'In ST' : 'Saved';
+    const badgeText  = r.source === 'gmail' ? 'Gmail' : (r.status === 'pushed' ? 'In ST' : 'Saved');
+    const shortId    = r.invoice || r.gmailId?.slice(0,6) || r.dbId?.slice(0,6) || r.id.slice(0,8);
     item.innerHTML = `
       <div class="rec-icon ${isImg ? 'img-icon' : ''}">${typeLabel}</div>
       <div class="rec-body">
         <div class="rec-name">${r.vendor || r.name}</div>
-        <div class="rec-id">${r.id} · ${r.invoice || '—'}</div>
+        <div class="rec-id">${shortId}</div>
         <div class="rec-meta">${r.date} · ${r.jobId || 'No job set'}</div>
       </div>
       <div class="rec-right">

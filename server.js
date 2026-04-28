@@ -588,7 +588,9 @@ app.use(async (req, res, next) => {
     '/api/create-po',
     '/api/create-expense',
     '/api/queue-manual-upload',
-    '/api/receipts-list'
+    '/api/receipts-list',
+    '/api/gmail-receipts',
+    '/api/receipt-status'
   ];
 
   if (!req.path.startsWith('/api/') || open.includes(req.path) || req.path.startsWith('/api/incoming-status/')) return next();
@@ -1876,6 +1878,38 @@ app.get('/api/receipts-list', async (req, res) => {
     const { data, error } = await sb.from('receipts')
       .select('*')
       .order('saved_at', { ascending: false })
+      .limit(200);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ receipts: data || [] });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Update receipt status in DB ──
+app.patch('/api/receipt-status', async (req, res) => {
+  try {
+    const { id, status, stPurchaseOrderId } = req.body || {};
+    if (!id || !status) return res.status(400).json({ error: 'Missing id or status' });
+    const sb = await getSupabaseAdmin();
+    const update = { status };
+    if (stPurchaseOrderId) update.st_purchase_order_id = stPurchaseOrderId;
+    const { error } = await sb.from('receipts').update(update).eq('id', id);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Gmail receipts history ──
+app.get('/api/gmail-receipts', async (req, res) => {
+  try {
+    const sb = await getSupabaseAdmin();
+    const { data, error } = await sb.from('upload_queue')
+      .select('*')
+      .eq('status', 'done')
+      .order('processed_at', { ascending: false })
       .limit(200);
     if (error) return res.status(500).json({ error: error.message });
     return res.json({ receipts: data || [] });
