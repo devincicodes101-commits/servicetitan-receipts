@@ -1791,6 +1791,7 @@ async function getSTLookups(token, creds) {
 
   const locationId = parseInt(process.env.ST_LOCATION_ID || '') ||
     await firstId(
+      `${base}/inventory/v2/tenant/${tid}/trucks?active=true&pageSize=1`,
       `${base}/inventory/v2/tenant/${tid}/inventory-locations?active=true&pageSize=1`,
       `${base}/inventory/v2/tenant/${tid}/locations?active=true&pageSize=1`
     );
@@ -1803,29 +1804,17 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
   const creds = getSTCreds();
   if (!creds) throw new Error('ServiceTitan credentials not configured');
 
-  // ── Validate required .env account settings up front ──
-  const businessUnitId    = parseInt(process.env.ST_BU_ID       || '');
-  const inventoryLocationId = parseInt(process.env.ST_LOCATION_ID || '');
-  if (!businessUnitId)      throw new Error('Missing ST_BU_ID in .env — visit /api/test-st to find your business unit IDs');
-  if (!inventoryLocationId) throw new Error('Missing ST_LOCATION_ID in .env — set it to your ServiceTitan inventory location ID');
-
   const token = await getSTToken(creds);
 
-  // typeId: .env override or auto-fetch first active PO type
-  let typeId = parseInt(process.env.ST_TYPE_ID || '');
-  if (!typeId) {
-    try {
-      const r = await fetch(
-        `https://api.servicetitan.io/inventory/v2/tenant/${creds.tenantId}/purchase-order-types?active=true&pageSize=1`,
-        { headers: { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey } }
-      );
-      if (r.ok) {
-        const d = await r.json();
-        typeId = (d.data || d.items || [])[0]?.id || 0;
-      }
-    } catch { /* leave 0 */ }
-    if (!typeId) throw new Error('No PO type found in ST — set ST_TYPE_ID in .env');
-  }
+  // Auto-lookup account-level IDs (env vars override auto-discovery)
+  const lookups = await getSTLookups(token, creds);
+  const businessUnitId    = parseInt(process.env.ST_BU_ID       || '') || lookups.businessUnitId;
+  const inventoryLocationId = parseInt(process.env.ST_LOCATION_ID || '') || lookups.locationId;
+  const typeId            = parseInt(process.env.ST_TYPE_ID     || '') || lookups.typeId;
+
+  if (!businessUnitId)      throw new Error('No business unit found — set ST_BU_ID in .env or visit /api/test-st');
+  if (!inventoryLocationId) throw new Error('No inventory location found — set ST_LOCATION_ID in .env or visit /api/test-st');
+  if (!typeId)              throw new Error('No PO type found — set ST_TYPE_ID in .env or visit /api/test-st');
 
   // ── Vendor lookup by extracted name ──
   const vendorId = await lookupSTVendor(token, creds, vendor);
@@ -1939,12 +1928,13 @@ app.get('/api/test-st', async (req, res) => {
       } catch (e) { return { error: e.message }; }
     }
 
-    const [vendors, poTypes, bu1, bu2, bu3, loc1, loc2] = await Promise.all([
+    const [vendors, poTypes, bu1, bu2, bu3, loc1, loc2, loc3] = await Promise.all([
       probe(`${base}/inventory/v2/tenant/${tid}/vendors?pageSize=5`),
       probe(`${base}/inventory/v2/tenant/${tid}/purchase-order-types?active=true&pageSize=5`),
       probe(`${base}/businessunits/v2/tenant/${tid}/business-units?active=true&pageSize=5`),
       probe(`${base}/settings/v2/tenant/${tid}/business-units?active=true&pageSize=5`),
       probe(`${base}/tenant/v2/tenant/${tid}/business-units?active=true&pageSize=5`),
+      probe(`${base}/inventory/v2/tenant/${tid}/trucks?active=true&pageSize=5`),
       probe(`${base}/inventory/v2/tenant/${tid}/inventory-locations?active=true&pageSize=5`),
       probe(`${base}/inventory/v2/tenant/${tid}/locations?active=true&pageSize=5`)
     ]);
@@ -1952,7 +1942,7 @@ app.get('/api/test-st', async (req, res) => {
     result.vendors = vendors;
     result.poTypes = poTypes;
     result.businessUnits = { 'businessunits/v2': bu1, 'settings/v2': bu2, 'tenant/v2': bu3 };
-    result.inventoryLocations = { 'inventory-locations': loc1, 'locations': loc2 };
+    result.inventoryLocations = { 'trucks': loc1, 'inventory-locations': loc2, 'locations': loc3 };
     result.envOverrides = {
       ST_TYPE_ID:         process.env.ST_TYPE_ID     || '(auto)',
       ST_BU_ID:           process.env.ST_BU_ID       || '(auto)',
