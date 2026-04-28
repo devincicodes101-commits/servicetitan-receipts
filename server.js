@@ -857,14 +857,18 @@ function extractFieldsFromLlama(content) {
 
   const boldMatch = content.match(/\*\*([A-Za-z][A-Za-z\s&.-]+?)\*\*/);
 
+  // Explicit label lookups first — more reliable than heading detection
   vendor =
-    headingMatch ||
-    (boldMatch?.[1]?.trim() && !DOC_KEYWORDS.test(boldMatch[1]) ? boldMatch[1].trim() : null) ||
     lmap['VENDOR'] ||
     lmap['SUPPLIER'] ||
-    lmap['COMPANY'] ||
     lmap['SOLD BY'] ||
     lmap['BILLED BY'] ||
+    lmap['BILL FROM'] ||
+    lmap['INVOICE FROM'] ||
+    lmap['COMPANY'] ||
+    // Fall back to heading/bold only if no explicit label found
+    headingMatch ||
+    (boldMatch?.[1]?.trim() && !DOC_KEYWORDS.test(boldMatch[1]) ? boldMatch[1].trim() : null) ||
     null;
 
   invoiceNo =
@@ -1190,7 +1194,7 @@ async function parseWithGemini(fileBuffer, mimeType) {
   const prompt = `You are a receipt and invoice parser. Extract ALL content from this document exactly as printed.
 
 Formatting rules (follow exactly):
-- Output the vendor/company name as a # H1 heading (e.g. "# GESCAN")
+- Output the SUPPLIER/ISSUER company name as a # H1 heading — this is the company that SENT or ISSUED the invoice (the seller), NOT the customer, bill-to party, or the company whose logo appears in a header watermark. For example, if "Sasquatch Heat Pumps" is printed at the top as the customer and "Andrew Sheret Limited" is the seller shown in the body, output "# Andrew Sheret Limited".
 - Output every table as an HTML <table> with <tr><th> for header rows and <tr><td> for data cells
 - Preserve every value exactly as printed — do not round numbers, reformat dates, or paraphrase
 - Include ALL rows: header rows, sub-header rows, data rows, totals rows
@@ -1231,7 +1235,8 @@ TRAILING MINUS / CREDIT NOTATION (STRICT):
 
 After all document content above, write a line containing only ---JSON--- then a single JSON object (no markdown fences, no extra text):
 {"poNumber":"","poDate":"","requiredDate":"","vendorName":"","vendorInvoiceNo":"","totalAmount":0,"lineItems":[{"vendorPartNo":"","stPartNo":"","description":"","jobNo":"","cost":0,"quantity":1,"total":0}]}
-Fill every field from the document. Use empty string for missing text, 0 for missing numbers, YYYY-MM-DD for dates. For lineItems, include one entry per product/material row.`;
+Fill every field from the document. Use empty string for missing text, 0 for missing numbers, YYYY-MM-DD for dates. For lineItems, include one entry per product/material row.
+IMPORTANT: vendorName must be the company that ISSUED this invoice (the seller/supplier). Never use the customer name, bill-to name, or any watermark/logo company name that represents the recipient of the invoice.`;
 
   if (mimeType === 'application/pdf') {
     // Upload via Files API so Gemini processes every page of the PDF
