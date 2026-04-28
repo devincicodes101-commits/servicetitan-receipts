@@ -1688,24 +1688,35 @@ async function getSTLookups(token, creds) {
   const base = 'https://api.servicetitan.io';
   const tid = creds.tenantId;
 
-  async function firstId(url) {
-    try {
-      const r = await fetch(url, { headers: h });
-      if (!r.ok) return null;
-      const d = await r.json();
-      const items = d.data || d.items || [];
-      return items[0]?.id || null;
-    } catch { return null; }
+  async function firstId(...urls) {
+    for (const url of urls) {
+      try {
+        const r = await fetch(url, { headers: h });
+        if (!r.ok) continue;
+        const d = await r.json();
+        const items = d.data || d.items || [];
+        if (items[0]?.id) return items[0].id;
+      } catch { /* try next */ }
+    }
+    return null;
   }
 
   const typeId = parseInt(process.env.ST_TYPE_ID || '') ||
     await firstId(`${base}/inventory/v2/tenant/${tid}/purchase-order-types?active=true&pageSize=1`);
 
+  // ST uses different namespaces across accounts — try all known paths
   const businessUnitId = parseInt(process.env.ST_BU_ID || '') ||
-    await firstId(`${base}/businessunits/v2/tenant/${tid}/business-units?active=true&pageSize=1`);
+    await firstId(
+      `${base}/businessunits/v2/tenant/${tid}/business-units?active=true&pageSize=1`,
+      `${base}/settings/v2/tenant/${tid}/business-units?active=true&pageSize=1`,
+      `${base}/tenant/v2/tenant/${tid}/business-units?active=true&pageSize=1`
+    );
 
   const locationId = parseInt(process.env.ST_LOCATION_ID || '') ||
-    await firstId(`${base}/inventory/v2/tenant/${tid}/inventory-locations?active=true&pageSize=1`);
+    await firstId(
+      `${base}/inventory/v2/tenant/${tid}/inventory-locations?active=true&pageSize=1`,
+      `${base}/inventory/v2/tenant/${tid}/locations?active=true&pageSize=1`
+    );
 
   console.log(`[st-lookups] typeId=${typeId} buId=${businessUnitId} locationId=${locationId}`);
   return { typeId, businessUnitId, locationId };
@@ -1722,9 +1733,20 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, requir
   ]);
   console.log(`[create-po] vendor="${vendor}" → vendorId=${vendorId}`, lookups);
 
+  if (!lookups.businessUnitId) throw new Error('ST businessUnitId not found — set ST_BU_ID in .env. Open /api/test-st to see available IDs.');
+  if (!lookups.locationId)     throw new Error('ST inventoryLocationId not found — set ST_LOCATION_ID in .env. Open /api/test-st to see available IDs.');
+
   const today = new Date().toISOString().slice(0, 10);
   const defaultSkuId = parseInt(process.env.ST_DEFAULT_SKU_ID || '0') || 0;
-  const shipTo = (process.env.ST_SHIP_TO || 'Main Location').trim();
+
+  // shipTo must be a CreateAddressRequest object
+  const shipTo = {
+    street:  (process.env.ST_SHIP_TO_STREET  || '').trim() || undefined,
+    city:    (process.env.ST_SHIP_TO_CITY    || '').trim() || undefined,
+    state:   (process.env.ST_SHIP_TO_STATE   || '').trim() || undefined,
+    zip:     (process.env.ST_SHIP_TO_ZIP     || '').trim() || undefined,
+    country: (process.env.ST_SHIP_TO_COUNTRY || 'US').trim()
+  };
 
   // Build items — if none extracted, use a single placeholder so the PO is valid
   const rawItems = lineItems && lineItems.length > 0
@@ -1740,13 +1762,13 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, requir
   }));
 
   const poBody = {
-    typeId:                   lookups.typeId   || undefined,
+    typeId:                   lookups.typeId,
     number:                   poNumber         || undefined,
     date:                     today,
     requiredOn:               requiredDate     || today,
     vendorId:                 vendorId         || undefined,
-    businessUnitId:           lookups.businessUnitId || undefined,
-    inventoryLocationId:      lookups.locationId     || undefined,
+    businessUnitId:           lookups.businessUnitId,
+    inventoryLocationId:      lookups.locationId,
     shipTo,
     tax:                      0,
     shipping:                 0,
@@ -1809,17 +1831,20 @@ app.get('/api/test-st', async (req, res) => {
       } catch (e) { return { error: e.message }; }
     }
 
-    const [vendors, poTypes, businessUnits, locations] = await Promise.all([
+    const [vendors, poTypes, bu1, bu2, bu3, loc1, loc2] = await Promise.all([
       probe(`${base}/inventory/v2/tenant/${tid}/vendors?pageSize=5`),
       probe(`${base}/inventory/v2/tenant/${tid}/purchase-order-types?active=true&pageSize=5`),
       probe(`${base}/businessunits/v2/tenant/${tid}/business-units?active=true&pageSize=5`),
-      probe(`${base}/inventory/v2/tenant/${tid}/inventory-locations?active=true&pageSize=5`)
+      probe(`${base}/settings/v2/tenant/${tid}/business-units?active=true&pageSize=5`),
+      probe(`${base}/tenant/v2/tenant/${tid}/business-units?active=true&pageSize=5`),
+      probe(`${base}/inventory/v2/tenant/${tid}/inventory-locations?active=true&pageSize=5`),
+      probe(`${base}/inventory/v2/tenant/${tid}/locations?active=true&pageSize=5`)
     ]);
 
     result.vendors = vendors;
     result.poTypes = poTypes;
-    result.businessUnits = businessUnits;
-    result.inventoryLocations = locations;
+    result.businessUnits = { 'businessunits/v2': bu1, 'settings/v2': bu2, 'tenant/v2': bu3 };
+    result.inventoryLocations = { 'inventory-locations': loc1, 'locations': loc2 };
     result.envOverrides = {
       ST_TYPE_ID:         process.env.ST_TYPE_ID     || '(auto)',
       ST_BU_ID:           process.env.ST_BU_ID       || '(auto)',
