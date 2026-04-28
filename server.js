@@ -1833,10 +1833,11 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
   const shipTo = {
     description: (process.env.ST_SHIP_TO_DESCRIPTION || 'Main Location').trim(),
     address: {
-      street:  (process.env.ST_SHIP_TO_STREET  || '').trim() || undefined,
-      city:    (process.env.ST_SHIP_TO_CITY    || '').trim() || undefined,
-      state:   (process.env.ST_SHIP_TO_STATE   || '').trim() || undefined,
-      zip:     (process.env.ST_SHIP_TO_ZIP     || '').trim() || undefined,
+      street:  (process.env.ST_SHIP_TO_STREET  || '').trim(),
+      unit:    (process.env.ST_SHIP_TO_UNIT    || '').trim(),
+      city:    (process.env.ST_SHIP_TO_CITY    || '').trim(),
+      state:   (process.env.ST_SHIP_TO_STATE   || '').trim(),
+      zip:     (process.env.ST_SHIP_TO_ZIP     || '').trim(),
       country: (process.env.ST_SHIP_TO_COUNTRY || 'CA').trim()
     }
   };
@@ -1872,7 +1873,7 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     tax:                      parseFloat(tax)      || 0,
     shipping:                 parseFloat(shipping) || 0,
     impactsTechnicianPayroll: false,
-    request:                  true,
+    request:                  1,
     memo:                     vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined,
     items
   };
