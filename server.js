@@ -1878,7 +1878,7 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     tax:                      parseFloat(tax)      || 0,
     shipping:                 parseFloat(shipping) || 0,
     impactsTechnicianPayroll: false,
-    request:                  1,
+    request:                  0,
     memo:                     vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined,
     items
   };
