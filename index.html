@@ -1197,7 +1197,7 @@ async function loadReceiptsFromDB() {
 // REVIEW QUEUE
 // ============================================================
 function renderReviewList() {
-  const pending = receipts.filter(r => r.status === 'pending' || r.status === 'saved');
+  const pending = receipts.filter(r => r.source !== 'gmail' && (r.status === 'pending' || r.status === 'saved'));
   const el = document.getElementById('reviewItems');
   document.getElementById('reviewCount').textContent = pending.length + ' item' + (pending.length !== 1 ? 's' : '');
   updateNavCounts();
@@ -1657,7 +1657,7 @@ function updateStats() {
 }
 
 function updateNavCounts() {
-  const reviewPending = receipts.filter(r => r.status === 'pending' || r.status === 'saved').length;
+  const reviewPending = receipts.filter(r => r.source !== 'gmail' && (r.status === 'pending' || r.status === 'saved')).length;
   const histTotal     = receipts.filter(r => r.status === 'saved' || r.status === 'pushed').length;
   const reviewEl  = document.getElementById('navReviewCount');
   const historyEl = document.getElementById('navHistoryCount');
