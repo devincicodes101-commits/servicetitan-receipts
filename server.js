@@ -1686,29 +1686,43 @@ async function getSTToken(creds) {
 
 async function lookupSTVendor(token, creds, vendorName) {
   if (!vendorName) return null;
-  try {
-    const res = await fetch(
-      `https://api.servicetitan.io/inventory/v2/tenant/${creds.tenantId}/vendors?` +
-      new URLSearchParams({ name: vendorName, pageSize: '5' }),
-      { headers: { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey } }
-    );
-    const data = await res.json();
-    const items = data.data || data.items || [];
-    if (items.length > 0) return items[0].id;
-    // Try partial match if exact fails
-    const res2 = await fetch(
-      `https://api.servicetitan.io/inventory/v2/tenant/${creds.tenantId}/vendors?` +
-      new URLSearchParams({ name: vendorName.split(' ')[0], pageSize: '10' }),
-      { headers: { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey } }
-    );
-    const data2 = await res2.json();
-    const items2 = data2.data || data2.items || [];
-    const match = items2.find(v => v.name && v.name.toLowerCase().includes(vendorName.toLowerCase().split(' ')[0]));
-    return match ? match.id : null;
-  } catch (e) {
-    console.warn('[st-vendor-lookup] failed:', e.message);
-    return null;
+  const h = { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey };
+  const base = `https://api.servicetitan.io/inventory/v2/tenant/${creds.tenantId}/vendors`;
+  const nameLower = vendorName.toLowerCase();
+
+  async function searchVendors(params) {
+    try {
+      const r = await fetch(`${base}?` + new URLSearchParams({ pageSize: '50', active: 'true', ...params }), { headers: h });
+      if (!r.ok) return [];
+      const d = await r.json();
+      return d.data || d.items || [];
+    } catch { return []; }
   }
+
+  // 1. Exact name search
+  const exact = await searchVendors({ name: vendorName });
+  if (exact.length > 0) {
+    console.log(`[st-vendor] exact match "${vendorName}" → id=${exact[0].id}`);
+    return exact[0].id;
+  }
+
+  // 2. Broader list — fuzzy match any vendor whose name contains a word from vendorName
+  const all = await searchVendors({ pageSize: '200' });
+  const words = nameLower.split(/\s+/).filter(w => w.length > 2);
+  // Score each vendor by how many words from vendorName appear in their name
+  let best = null, bestScore = 0;
+  for (const v of all) {
+    const vn = (v.name || '').toLowerCase();
+    const score = words.filter(w => vn.includes(w)).length;
+    if (score > bestScore) { bestScore = score; best = v; }
+  }
+  if (best && bestScore > 0) {
+    console.log(`[st-vendor] fuzzy match "${vendorName}" → "${best.name}" id=${best.id} (score=${bestScore})`);
+    return best.id;
+  }
+
+  console.warn(`[st-vendor] no match for "${vendorName}" — available: ${all.map(v => v.name).join(', ')}`);
+  return null;
 }
 
 // Search ST pricebook for a matching SKU by vendor part number, then description
@@ -1878,7 +1892,6 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     tax:                      parseFloat(tax)      || 0,
     shipping:                 parseFloat(shipping) || 0,
     impactsTechnicianPayroll: false,
-    request:                  0,
     memo:                     vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined,
     items
   };
