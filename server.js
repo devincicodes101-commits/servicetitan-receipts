@@ -302,8 +302,8 @@ app.post('/api/process-incoming-row', async (req, res) => {
 
   if (!claimed || claimed.length === 0) return res.json({ success: true, message: 'Already claimed' });
 
-  const result = await processOneRow(sb, row);
-  return res.json(result);
+  await processIncomingForST(sb, row);
+  return res.json({ success: true, id: rowId });
 });
 
 // ── Process a manually-uploaded receipt for ServiceTitan (background) ──
