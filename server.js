@@ -1716,7 +1716,11 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, requir
   );
 
   const poData = await poRes.json();
-  if (!poRes.ok) throw new Error(poData.title || JSON.stringify(poData));
+  if (!poRes.ok) {
+    const detail = poData.errors ? JSON.stringify(poData.errors) : (poData.detail || poData.title || JSON.stringify(poData));
+    console.error('[create-po] ST validation error:', JSON.stringify(poData));
+    throw new Error(detail);
+  }
   console.log(`[create-po] created PO id=${poData.id} number=${poData.number}`);
   return { poId: poData.id, poNumber: poData.number };
 }
