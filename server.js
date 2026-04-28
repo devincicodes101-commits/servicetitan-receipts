@@ -590,7 +590,8 @@ app.use(async (req, res, next) => {
     '/api/queue-manual-upload',
     '/api/receipts-list',
     '/api/gmail-receipts',
-    '/api/receipt-status'
+    '/api/receipt-status',
+    '/api/incoming-history'
   ];
 
   if (!req.path.startsWith('/api/') || open.includes(req.path) || req.path.startsWith('/api/incoming-status/')) return next();
@@ -1878,6 +1879,22 @@ app.get('/api/receipts-list', async (req, res) => {
     const { data, error } = await sb.from('receipts')
       .select('*')
       .order('saved_at', { ascending: false })
+      .limit(200);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ receipts: data || [] });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── History from incoming_receipts (manual uploads) ──
+app.get('/api/incoming-history', async (req, res) => {
+  try {
+    const sb = await getSupabaseAdmin();
+    const { data, error } = await sb.from('incoming_receipts')
+      .select('id, file_name, storage_path, file_url, status, error, result, processed_at, created_at')
+      .eq('status', 'done')
+      .order('processed_at', { ascending: false })
       .limit(200);
     if (error) return res.status(500).json({ error: error.message });
     return res.json({ receipts: data || [] });

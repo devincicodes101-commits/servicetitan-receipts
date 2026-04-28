@@ -1095,6 +1095,55 @@ async function loadReceiptsFromDB() {
       });
     }
 
+    // ── Manually uploaded receipts from `incoming_receipts` table (fallback source) ──
+    const incomingRes = await fetch('/api/incoming-history');
+    if (incomingRes.ok) {
+      const { receipts: incomingRecs = [] } = await incomingRes.json();
+      const knownIncomingIds = new Set(receipts.filter(r => r.incomingId).map(r => r.incomingId));
+      incomingRecs.forEach(r => {
+        // Skip if we already have this receipt via the receipts table (dbId match)
+        if (knownIncomingIds.has(r.id)) return;
+        // Also skip if a receipts-table row has receiptId pointing to this incoming row
+        const d = r.result || {};
+        if (d.receiptId && receipts.some(x => x.dbId === d.receiptId)) return;
+        const dateStr = r.processed_at
+          ? new Date(r.processed_at).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+          : '';
+        receipts.push({
+          id:            'INC-' + r.id,
+          incomingId:    r.id,
+          dbId:          d.receiptId || null,
+          name:          r.file_name || ('Receipt ' + r.id.slice(0, 6)),
+          size:          0,
+          type:          'application/pdf',
+          fileURL:       d.receiptBlobUrl || r.file_url || '',
+          source:        'manual',
+          date:          dateStr,
+          savedDate:     r.processed_at || null,
+          status:        'saved',
+          extracting:    false,
+          vendor:        d.vendor          || '',
+          invoice:       d.invoiceNo       || '',
+          amount:        d.total           || '',
+          jobId:         d.jobNo           || '',
+          invoiceDate:   d.date            || '',
+          poNumber:      d.poNumber        || '',
+          requiredDate:  d.requiredDate    || '',
+          vendorInvoiceNo: d.vendorInvoiceNo || '',
+          lineItems: Array.isArray(d.items) ? d.items.map(i => ({
+            vendorPartNo: i.vendorPartNo || '',
+            stPartNo:     i.stPartNo     || '',
+            desc:         i.desc         || i.description || '',
+            jobNo:        i.jobNo        || '',
+            qty:          i.qty          || i.quantity    || 1,
+            unit:         i.unit         || i.cost        || '0.00',
+            total:        i.total        || '0.00'
+          })) : [],
+          stPurchaseOrderId: null
+        });
+      });
+    }
+
     // ── Gmail receipts from `upload_queue` table ──
     const gmailRes = await fetch('/api/gmail-receipts');
     if (gmailRes.ok) {
