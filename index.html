@@ -1051,6 +1051,7 @@ async function loadReceiptsFromDB() {
   try {
     const knownDbIds    = new Set(receipts.filter(r => r.dbId).map(r => r.dbId));
     const knownGmailIds = new Set(receipts.filter(r => r.gmailId).map(r => r.gmailId));
+    const knownFileURLs = new Set(receipts.filter(r => r.fileURL).map(r => r.fileURL));
 
     // ── Manual receipts from `receipts` table ──
     const manualRes = await fetch('/api/receipts-list');
@@ -1093,6 +1094,8 @@ async function loadReceiptsFromDB() {
           })) : [],
           stPurchaseOrderId: r.st_purchase_order_id || null
         });
+        // track loaded file URLs so upload_queue duplicates are skipped
+        if (r.receipt_blob_url) knownFileURLs.add(r.receipt_blob_url);
       });
     }
 
@@ -1151,6 +1154,8 @@ async function loadReceiptsFromDB() {
       const { receipts: gmailRecs = [] } = await gmailRes.json();
       gmailRecs.forEach(r => {
         if (knownGmailIds.has(r.id)) return;
+        // skip if receipts table already has this file (processOneQueueRow inserted it)
+        if (r.file_url && knownFileURLs.has(r.file_url)) return;
         receipts.push({
           id:         'GMAIL-' + r.id,
           gmailId:    r.id,
@@ -1161,16 +1166,16 @@ async function loadReceiptsFromDB() {
           source:     'gmail',
           date:       r.processed_at ? new Date(r.processed_at).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '',
           savedDate:  r.processed_at || null,
-          status:     'saved',
+          status:     r.st_purchase_order_id ? 'pushed' : 'saved',
           extracting: false,
           vendor:     r.vendor     || '',
           invoice:    r.invoice_no || '',
           amount:     String(r.amount || ''),
           jobId:      r.job_no     || '',
           invoiceDate: r.date      || '',
-          poNumber:   '',
-          requiredDate: '',
-          vendorInvoiceNo: r.invoice_no || '',
+          poNumber:   r.po_number  || '',
+          requiredDate: r.required_date || '',
+          vendorInvoiceNo: r.vendor_invoice_no || r.invoice_no || '',
           lineItems: Array.isArray(r.items) ? r.items.map(i => ({
             vendorPartNo: i.vendorPartNo || '',
             stPartNo:     i.stPartNo     || '',
@@ -1180,7 +1185,7 @@ async function loadReceiptsFromDB() {
             unit:         i.unit         || i.cost        || '0.00',
             total:        i.total        || '0.00'
           })) : [],
-          stPurchaseOrderId: null
+          stPurchaseOrderId: r.st_purchase_order_id || null
         });
       });
     }

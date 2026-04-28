@@ -496,10 +496,13 @@ async function processOneQueueRow(sb, row) {
       });
       stPoId = stResult.poId;
       console.log(`[process-queue] ${rowId}: ST PO created → id=${stPoId}`);
-      // Mark receipt as pushed
+      // Mark receipt as pushed in both tables
       if (!insertErr) {
         await sb.from('receipts').update({ status: 'pushed', st_purchase_order_id: String(stPoId) }).eq('id', receiptId);
       }
+      await sb.from('upload_queue').update({ st_purchase_order_id: String(stPoId) }).eq('id', rowId).catch(e => {
+        console.warn(`[process-queue] ${rowId}: could not write st_purchase_order_id to upload_queue:`, e.message);
+      });
     } catch (stErr) {
       console.error(`[process-queue] ${rowId}: ST post failed:`, stErr.message);
     }
@@ -664,7 +667,8 @@ app.use(async (req, res, next) => {
     '/api/receipts-list',
     '/api/gmail-receipts',
     '/api/receipt-status',
-    '/api/incoming-history'
+    '/api/incoming-history',
+    '/api/test-st'
   ];
 
   if (!req.path.startsWith('/api/') || open.includes(req.path) || req.path.startsWith('/api/incoming-status/')) return next();
@@ -1679,28 +1683,79 @@ async function lookupSTVendor(token, creds, vendorName) {
   }
 }
 
+async function getSTLookups(token, creds) {
+  const h = { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey };
+  const base = 'https://api.servicetitan.io';
+  const tid = creds.tenantId;
+
+  async function firstId(url) {
+    try {
+      const r = await fetch(url, { headers: h });
+      if (!r.ok) return null;
+      const d = await r.json();
+      const items = d.data || d.items || [];
+      return items[0]?.id || null;
+    } catch { return null; }
+  }
+
+  const typeId = parseInt(process.env.ST_TYPE_ID || '') ||
+    await firstId(`${base}/inventory/v2/tenant/${tid}/purchase-order-types?active=true&pageSize=1`);
+
+  const businessUnitId = parseInt(process.env.ST_BU_ID || '') ||
+    await firstId(`${base}/businessunits/v2/tenant/${tid}/business-units?active=true&pageSize=1`);
+
+  const locationId = parseInt(process.env.ST_LOCATION_ID || '') ||
+    await firstId(`${base}/inventory/v2/tenant/${tid}/inventory-locations?active=true&pageSize=1`);
+
+  console.log(`[st-lookups] typeId=${typeId} buId=${businessUnitId} locationId=${locationId}`);
+  return { typeId, businessUnitId, locationId };
+}
+
 async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, requiredDate, jobId, lineItems }) {
   const creds = getSTCreds();
   if (!creds) throw new Error('ServiceTitan credentials not configured');
 
   const token = await getSTToken(creds);
-  const vendorId = await lookupSTVendor(token, creds, vendor);
-  console.log(`[create-po] vendor="${vendor}" → vendorId=${vendorId}`);
+  const [vendorId, lookups] = await Promise.all([
+    lookupSTVendor(token, creds, vendor),
+    getSTLookups(token, creds)
+  ]);
+  console.log(`[create-po] vendor="${vendor}" → vendorId=${vendorId}`, lookups);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const defaultSkuId = parseInt(process.env.ST_DEFAULT_SKU_ID || '0') || 0;
+  const shipTo = (process.env.ST_SHIP_TO || 'Main Location').trim();
+
+  // Build items — if none extracted, use a single placeholder so the PO is valid
+  const rawItems = lineItems && lineItems.length > 0
+    ? lineItems
+    : [{ desc: vendorInvoiceNo || vendor || 'Receipt', qty: 1, unit: '0.00' }];
+
+  const items = rawItems.map(li => ({
+    skuId:            defaultSkuId,
+    vendorPartNumber: (li.vendorPartNo || li.stPartNo || 'N/A').trim() || 'N/A',
+    description:      (li.desc || vendor || 'Item').trim(),
+    quantity:         Math.max(1, parseFloat(li.qty) || 1),
+    cost:             parseFloat(li.unit) || 0
+  }));
 
   const poBody = {
-    number:       poNumber    || undefined,
-    requiredDate: requiredDate || undefined,
-    memo:         vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined,
-    items: (lineItems || []).map(li => ({
-      description: li.desc  || '',
-      quantity:    li.qty   || 1,
-      cost:        parseFloat(li.unit) || 0,
-      ...(li.jobNo ? { jobId: parseInt(li.jobNo) } : {})
-    }))
+    typeId:                   lookups.typeId   || undefined,
+    number:                   poNumber         || undefined,
+    date:                     today,
+    requiredOn:               requiredDate     || today,
+    vendorId:                 vendorId         || undefined,
+    businessUnitId:           lookups.businessUnitId || undefined,
+    inventoryLocationId:      lookups.locationId     || undefined,
+    shipTo,
+    tax:                      0,
+    shipping:                 0,
+    impactsTechnicianPayroll: false,
+    memo:                     vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined,
+    items
   };
 
-  if (vendorId)  poBody.vendorId = vendorId;
-  if (jobId)     poBody.jobId    = parseInt(jobId) || undefined;
+  if (jobId) poBody.jobId = parseInt(jobId) || undefined;
 
   const poRes = await fetch(
     `https://api.servicetitan.io/inventory/v2/tenant/${creds.tenantId}/purchase-orders`,
@@ -1725,6 +1780,60 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, requir
   return { poId: poData.id, poNumber: poData.number };
 }
 
+// ── ServiceTitan connectivity test (GET /api/test-st) ──
+app.get('/api/test-st', async (req, res) => {
+  const result = {};
+  try {
+    const creds = getSTCreds();
+    if (!creds) return res.json({ ok: false, step: 'creds', error: 'Missing ST env vars', result });
+    result.creds = {
+      tenantId: creds.tenantId,
+      clientId: creds.clientId.slice(0, 12) + '...',
+      hasSecret: !!creds.clientSecret,
+      appKey: creds.appKey.slice(0, 10) + '...'
+    };
+
+    const token = await getSTToken(creds);
+    result.token = 'ok (length=' + token.length + ')';
+
+    const h = { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey };
+    const base = 'https://api.servicetitan.io';
+    const tid = creds.tenantId;
+
+    async function probe(url) {
+      try {
+        const r = await fetch(url, { headers: h });
+        const d = await r.json();
+        const items = (d.data || d.items || []).slice(0, 5).map(x => ({ id: x.id, name: x.name || x.label || x.number }));
+        return { status: r.status, items, totalCount: d.totalCount };
+      } catch (e) { return { error: e.message }; }
+    }
+
+    const [vendors, poTypes, businessUnits, locations] = await Promise.all([
+      probe(`${base}/inventory/v2/tenant/${tid}/vendors?pageSize=5`),
+      probe(`${base}/inventory/v2/tenant/${tid}/purchase-order-types?active=true&pageSize=5`),
+      probe(`${base}/businessunits/v2/tenant/${tid}/business-units?active=true&pageSize=5`),
+      probe(`${base}/inventory/v2/tenant/${tid}/inventory-locations?active=true&pageSize=5`)
+    ]);
+
+    result.vendors = vendors;
+    result.poTypes = poTypes;
+    result.businessUnits = businessUnits;
+    result.inventoryLocations = locations;
+    result.envOverrides = {
+      ST_TYPE_ID:         process.env.ST_TYPE_ID     || '(auto)',
+      ST_BU_ID:           process.env.ST_BU_ID       || '(auto)',
+      ST_LOCATION_ID:     process.env.ST_LOCATION_ID || '(auto)',
+      ST_DEFAULT_SKU_ID:  process.env.ST_DEFAULT_SKU_ID || '0',
+      ST_SHIP_TO:         process.env.ST_SHIP_TO     || 'Main Location'
+    };
+
+    return res.json({ ok: true, step: 'done', result });
+  } catch (err) {
+    return res.json({ ok: false, step: 'error', error: err.message, result });
+  }
+});
+
 // ── ServiceTitan: create purchase order (manual UI post) ──
 app.post('/api/create-po', async (req, res) => {
   try {
@@ -1735,8 +1844,8 @@ app.post('/api/create-po', async (req, res) => {
     const result = await createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, requiredDate, jobId, lineItems });
     return res.json({ success: true, ...result });
   } catch (err) {
-    console.error('[create-po] error:', err.message);
-    return res.status(500).json({ error: err.message });
+    console.error('[create-po] error:', err.message, err.stack);
+    return res.status(500).json({ error: err.message || String(err) });
   }
 });
 
