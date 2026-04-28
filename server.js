@@ -620,43 +620,8 @@ const upload = multer({
 
 function extractFieldsFromLlama(content) {
   let vendor = null, invoiceNo = null, date = null, jobNo = null, total = null;
+  let poNumber = null, requiredDate = null, vendorInvoiceNo = null;
   const items = [];
-
-  // Parse structured JSON block emitted by the prompt's ---JSON--- directive
-  let structured = null;
-
-  // Try ---JSON--- separator (any surrounding whitespace)
-  const jsonSepMatch = content.match(/---JSON---\s*([\s\S]*?)(?:---|$)/);
-  if (jsonSepMatch) {
-    const raw = jsonSepMatch[1].trim();
-    const objMatch = raw.match(/\{[\s\S]*\}/);
-    try { structured = JSON.parse(objMatch ? objMatch[0] : raw); }
-    catch(e) { console.warn('[fields] ---JSON--- block parse failed:', e.message); }
-  }
-
-  // Fallback: try ```json fences
-  if (!structured) {
-    const fenceMatch = content.match(/```json\s*([\s\S]*?)\s*```/);
-    if (fenceMatch) {
-      try { structured = JSON.parse(fenceMatch[1]); }
-      catch(e) { console.warn('[fields] ```json fence parse failed:', e.message); }
-    }
-  }
-
-  // Fallback: find the last large JSON object in the text
-  if (!structured) {
-    const allObjs = [...content.matchAll(/\{[\s\S]{100,}\}/g)];
-    for (const m of allObjs.reverse()) {
-      try {
-        const parsed = JSON.parse(m[0]);
-        if (parsed.poNumber !== undefined || parsed.vendorName !== undefined || parsed.lineItems) {
-          structured = parsed; break;
-        }
-      } catch(e) { /* skip */ }
-    }
-  }
-
-  console.log('[fields] structured JSON found:', !!structured, structured ? Object.keys(structured) : []);
 
   function parseTables(input) {
     const tbls = [];
@@ -1038,36 +1003,62 @@ function extractFieldsFromLlama(content) {
     total = Math.round(itemsSum * 100) / 100;
   }
 
-  // Merge structured JSON (higher priority — Gemini read the doc directly)
-  let poNumber = null, requiredDate = null, vendorInvoiceNo = null;
+  // ── ST-specific fields from lmap (fallback before JSON overlay) ──
+  poNumber = lmap['PURCHASE ORDER NO'] || lmap['PURCHASE ORDER NUMBER'] ||
+             lmap['PO NO'] || lmap['PO NUMBER'] || lmap['PO #'] || null;
+
+  requiredDate = parseDate(
+    lmap['REQUIRED DATE'] || lmap['DELIVERY DATE'] || lmap['SHIP DATE'] || null
+  );
+
+  vendorInvoiceNo = lmap['VENDOR INVOICE NO'] || lmap['VENDOR INVOICE NUMBER'] ||
+                    lmap['VENDOR INVOICE'] || invoiceNo || null;
+
+  // ── JSON block overlay — highest priority for ST-specific fields ──
+  let structured = null;
+  const jsonSepMatch = content.match(/---JSON---\s*([\s\S]*?)(?:---|$)/);
+  if (jsonSepMatch) {
+    const raw = jsonSepMatch[1].trim();
+    const objMatch = raw.match(/\{[\s\S]*\}/);
+    try { structured = JSON.parse(objMatch ? objMatch[0] : raw); }
+    catch(e) { console.warn('[fields] JSON block parse failed:', e.message); }
+  }
+  if (!structured) {
+    const fenceMatch = content.match(/```json\s*([\s\S]*?)\s*```/);
+    if (fenceMatch) {
+      try { structured = JSON.parse(fenceMatch[1]); }
+      catch(e) { /* skip */ }
+    }
+  }
+
   if (structured) {
-    if (structured.vendorName)     vendor    = structured.vendorName;
-    if (structured.vendorInvoiceNo) { invoiceNo = structured.vendorInvoiceNo; vendorInvoiceNo = structured.vendorInvoiceNo; }
-    if (structured.poDate)         date      = parseDate(structured.poDate) || date;
-    if (structured.totalAmount)    total     = structured.totalAmount;
-    if (structured.poNumber)       poNumber  = structured.poNumber;
-    if (structured.requiredDate)   requiredDate = parseDate(structured.requiredDate);
-    // Extract jobNo from line items if not already found (e.g. ServiceTitan 8-digit job numbers)
+    if (structured.vendorName)      vendor       = structured.vendorName      || vendor;
+    if (structured.vendorInvoiceNo) { invoiceNo   = structured.vendorInvoiceNo; vendorInvoiceNo = structured.vendorInvoiceNo; }
+    if (structured.poDate)          date         = parseDate(structured.poDate) || date;
+    if (structured.totalAmount)     total        = structured.totalAmount;
+    if (structured.poNumber)        poNumber     = structured.poNumber;
+    if (structured.requiredDate)    requiredDate = parseDate(structured.requiredDate) || requiredDate;
+
     if (!jobNo && Array.isArray(structured.lineItems)) {
       for (const li of structured.lineItems) {
         if (li.jobNo) { jobNo = String(li.jobNo); break; }
       }
     }
+
     if (Array.isArray(structured.lineItems) && structured.lineItems.length) {
-      items.length = 0;
-      structured.lineItems.forEach(li => {
-        if (li.description || li.total) {
-          items.push({
-            vendorPartNo: li.vendorPartNo || '',
-            stPartNo:     li.stPartNo     || '',
-            desc:         li.description  || '',
-            jobNo:        li.jobNo        || '',
-            qty:          li.quantity     || 1,
-            unit:         li.cost         || null,
-            total:        li.total        || 0
-          });
-        }
-      });
+      const structItems = structured.lineItems.filter(li => li.description || li.total);
+      if (structItems.length) {
+        items.length = 0;
+        structItems.forEach(li => items.push({
+          vendorPartNo: li.vendorPartNo || '',
+          stPartNo:     li.stPartNo     || '',
+          desc:         li.description  || '',
+          jobNo:        li.jobNo        || '',
+          qty:          li.quantity     || 1,
+          unit:         li.cost         || null,
+          total:        li.total        || 0
+        }));
+      }
     }
   }
 
