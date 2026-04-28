@@ -1829,13 +1829,16 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
   const poDate      = safeDate(date)         || today;
   const poRequiredOn = safeDate(requiredDate) || poDate;
 
-  // ── shipTo address — always from .env (company-level fixed setting) ──
+  // ── shipTo — CreateShipToRequest: { description, address: CreateAddressRequest } ──
   const shipTo = {
-    street:  (process.env.ST_SHIP_TO_STREET  || '').trim() || undefined,
-    city:    (process.env.ST_SHIP_TO_CITY    || '').trim() || undefined,
-    state:   (process.env.ST_SHIP_TO_STATE   || '').trim() || undefined,
-    zip:     (process.env.ST_SHIP_TO_ZIP     || '').trim() || undefined,
-    country: (process.env.ST_SHIP_TO_COUNTRY || 'US').trim()
+    description: (process.env.ST_SHIP_TO_DESCRIPTION || 'Main Location').trim(),
+    address: {
+      street:  (process.env.ST_SHIP_TO_STREET  || '').trim() || undefined,
+      city:    (process.env.ST_SHIP_TO_CITY    || '').trim() || undefined,
+      state:   (process.env.ST_SHIP_TO_STATE   || '').trim() || undefined,
+      zip:     (process.env.ST_SHIP_TO_ZIP     || '').trim() || undefined,
+      country: (process.env.ST_SHIP_TO_COUNTRY || 'CA').trim()
+    }
   };
 
   // ── Line items — with per-item ST SKU lookup ──
@@ -1869,6 +1872,7 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     tax:                      parseFloat(tax)      || 0,
     shipping:                 parseFloat(shipping) || 0,
     impactsTechnicianPayroll: false,
+    request:                  true,
     memo:                     vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined,
     items
   };
