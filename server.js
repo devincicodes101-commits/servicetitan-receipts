@@ -483,7 +483,28 @@ async function processOneQueueRow(sb, row) {
       console.error(`[process-queue] ${rowId}: receipts insert error:`, insertErr.message);
     }
 
-    return { id: rowId, success: true };
+    // Auto-post to ServiceTitan as a Purchase Order
+    let stPoId = null;
+    try {
+      const stResult = await createSTPurchaseOrder({
+        poNumber:       fields.poNumber        || null,
+        vendor:         fields.vendor          || null,
+        vendorInvoiceNo: fields.vendorInvoiceNo || fields.invoiceNo || null,
+        requiredDate:   fields.requiredDate    || null,
+        jobId:          fields.jobNo           || null,
+        lineItems:      fields.items           || []
+      });
+      stPoId = stResult.poId;
+      console.log(`[process-queue] ${rowId}: ST PO created → id=${stPoId}`);
+      // Mark receipt as pushed
+      if (!insertErr) {
+        await sb.from('receipts').update({ status: 'pushed', st_purchase_order_id: String(stPoId) }).eq('id', receiptId);
+      }
+    } catch (stErr) {
+      console.error(`[process-queue] ${rowId}: ST post failed:`, stErr.message);
+    }
+
+    return { id: rowId, success: true, stPoId };
   } catch (err) {
     console.error(`[process-queue] ${rowId}: unhandled error:`, err);
     return markFailed(err.message || 'Unknown error');
@@ -1604,69 +1625,113 @@ app.post('/api/process-queue-item', async (req, res) => {
   }
 });
 
-// ── ServiceTitan: create purchase order ──
-app.post('/api/create-po', async (req, res) => {
+// ── ServiceTitan shared helpers ──
+function getSTCreds() {
+  const creds = {
+    tenantId:     (process.env.ST_TENANT_ID     || '').trim(),
+    appKey:       (process.env.ST_APP_KEY       || '').trim(),
+    clientId:     (process.env.ST_CLIENT_ID     || '').trim(),
+    clientSecret: (process.env.ST_CLIENT_SECRET || '').trim()
+  };
+  if (!creds.tenantId || !creds.appKey || !creds.clientId || !creds.clientSecret) return null;
+  return creds;
+}
+
+async function getSTToken(creds) {
+  const res = await fetch('https://auth.servicetitan.io/connect/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type:    'client_credentials',
+      client_id:     creds.clientId,
+      client_secret: creds.clientSecret
+    })
+  });
+  const data = await res.json();
+  if (!data.access_token) throw new Error('ST auth failed: ' + (data.error_description || data.error || 'unknown'));
+  return data.access_token;
+}
+
+async function lookupSTVendor(token, creds, vendorName) {
+  if (!vendorName) return null;
   try {
-    const { poNumber, vendor, vendorInvoiceNo, poDate, requiredDate, total, jobId, lineItems } = req.body || {};
+    const res = await fetch(
+      `https://api.servicetitan.io/inventory/v2/tenant/${creds.tenantId}/vendors?` +
+      new URLSearchParams({ name: vendorName, pageSize: '5' }),
+      { headers: { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey } }
+    );
+    const data = await res.json();
+    const items = data.data || data.items || [];
+    if (items.length > 0) return items[0].id;
+    // Try partial match if exact fails
+    const res2 = await fetch(
+      `https://api.servicetitan.io/inventory/v2/tenant/${creds.tenantId}/vendors?` +
+      new URLSearchParams({ name: vendorName.split(' ')[0], pageSize: '10' }),
+      { headers: { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey } }
+    );
+    const data2 = await res2.json();
+    const items2 = data2.data || data2.items || [];
+    const match = items2.find(v => v.name && v.name.toLowerCase().includes(vendorName.toLowerCase().split(' ')[0]));
+    return match ? match.id : null;
+  } catch (e) {
+    console.warn('[st-vendor-lookup] failed:', e.message);
+    return null;
+  }
+}
 
-    const ST_TENANT_ID     = (process.env.ST_TENANT_ID     || '').trim();
-    const ST_APP_KEY       = (process.env.ST_APP_KEY       || '').trim();
-    const ST_CLIENT_ID     = (process.env.ST_CLIENT_ID     || '').trim();
-    const ST_CLIENT_SECRET = (process.env.ST_CLIENT_SECRET || '').trim();
+async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, requiredDate, jobId, lineItems }) {
+  const creds = getSTCreds();
+  if (!creds) throw new Error('ServiceTitan credentials not configured');
 
-    if (!ST_TENANT_ID || !ST_APP_KEY || !ST_CLIENT_ID || !ST_CLIENT_SECRET) {
-      return res.status(503).json({
-        error: 'ServiceTitan credentials not configured. Add ST_TENANT_ID, ST_APP_KEY, ST_CLIENT_ID, ST_CLIENT_SECRET to .env'
-      });
-    }
+  const token = await getSTToken(creds);
+  const vendorId = await lookupSTVendor(token, creds, vendor);
+  console.log(`[create-po] vendor="${vendor}" → vendorId=${vendorId}`);
 
-    // Get OAuth token
-    const tokenRes = await fetch('https://auth.servicetitan.io/connect/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type:    'client_credentials',
-        client_id:     ST_CLIENT_ID,
-        client_secret: ST_CLIENT_SECRET
-      })
-    });
-    const tokenData = await tokenRes.json();
-    if (!tokenData.access_token) {
-      return res.status(401).json({ error: 'ServiceTitan auth failed: ' + (tokenData.error_description || tokenData.error || 'unknown') });
-    }
+  const poBody = {
+    number:       poNumber    || undefined,
+    requiredDate: requiredDate || undefined,
+    memo:         vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined,
+    items: (lineItems || []).map(li => ({
+      description: li.desc  || '',
+      quantity:    li.qty   || 1,
+      cost:        parseFloat(li.unit) || 0,
+      ...(li.jobNo ? { jobId: parseInt(li.jobNo) } : {})
+    }))
+  };
 
-    const poBody = {
-      number:       poNumber   || undefined,
-      requiredDate: requiredDate || undefined,
-      memo:         vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined,
-      items: (lineItems || []).map(li => ({
-        description: li.desc     || '',
-        quantity:    li.qty      || 1,
-        cost:        li.unit     || 0,
-        ...(li.jobNo ? { jobId: parseInt(li.jobNo) || undefined } : {})
-      }))
-    };
+  if (vendorId)  poBody.vendorId = vendorId;
+  if (jobId)     poBody.jobId    = parseInt(jobId) || undefined;
 
-    if (jobId) poBody.jobId = parseInt(jobId) || undefined;
-
-    const poRes = await fetch(`https://api.servicetitan.io/inventory/v2/tenant/${ST_TENANT_ID}/purchase-orders`, {
+  const poRes = await fetch(
+    `https://api.servicetitan.io/inventory/v2/tenant/${creds.tenantId}/purchase-orders`,
+    {
       method: 'POST',
       headers: {
-        'Authorization': 'Bearer ' + tokenData.access_token,
-        'ST-App-Key':    ST_APP_KEY,
+        'Authorization': 'Bearer ' + token,
+        'ST-App-Key':    creds.appKey,
         'Content-Type':  'application/json'
       },
       body: JSON.stringify(poBody)
-    });
-
-    const poData = await poRes.json();
-    if (!poRes.ok) {
-      return res.status(poRes.status).json({ error: poData.title || 'ServiceTitan API error', details: poData });
     }
+  );
 
-    return res.json({ success: true, poId: poData.id, poNumber: poData.number });
+  const poData = await poRes.json();
+  if (!poRes.ok) throw new Error(poData.title || JSON.stringify(poData));
+  console.log(`[create-po] created PO id=${poData.id} number=${poData.number}`);
+  return { poId: poData.id, poNumber: poData.number };
+}
+
+// ── ServiceTitan: create purchase order (manual UI post) ──
+app.post('/api/create-po', async (req, res) => {
+  try {
+    const creds = getSTCreds();
+    if (!creds) return res.status(503).json({ error: 'ServiceTitan credentials not configured' });
+
+    const { poNumber, vendor, vendorInvoiceNo, poDate, requiredDate, jobId, lineItems } = req.body || {};
+    const result = await createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, requiredDate, jobId, lineItems });
+    return res.json({ success: true, ...result });
   } catch (err) {
-    console.error('[create-po] error:', err);
+    console.error('[create-po] error:', err.message);
     return res.status(500).json({ error: err.message });
   }
 });
