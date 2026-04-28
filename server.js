@@ -419,6 +419,7 @@ async function processOneQueueRow(sb, row) {
     const fields = extractFieldsFromLlama(geminiOutput);
     console.log(`[process-queue] ${rowId}: fields=`, JSON.stringify(fields));
 
+    const now = new Date().toISOString();
     await sb.from('upload_queue').update({
       status: 'done',
       vendor: fields.vendor || null,
@@ -428,8 +429,35 @@ async function processOneQueueRow(sb, row) {
       job_no: fields.jobNo || null,
       items: fields.items || [],
       error: null,
-      processed_at: new Date().toISOString()
+      processed_at: now
     }).eq('id', rowId);
+
+    // Insert into receipts table so it appears in history
+    const receiptId = randomUUID();
+    const { error: insertErr } = await sb.from('receipts').insert({
+      id:               receiptId,
+      user_id:          row.user_id || null,
+      file_name:        row.file_name || null,
+      vendor:           fields.vendor || null,
+      date:             fields.date || null,
+      amount:           parseFloat(fields.total) || 0,
+      total:            fields.total != null ? String(fields.total) : null,
+      job_no:           fields.jobNo || null,
+      invoice_no:       fields.invoiceNo || null,
+      po_number:        fields.poNumber || null,
+      required_date:    fields.requiredDate || null,
+      vendor_invoice_no: fields.vendorInvoiceNo || null,
+      category:         null,
+      items:            fields.items || [],
+      receipt_blob_url: row.file_url || null,
+      status:           'saved',
+      source:           'gmail',
+      error:            null,
+      saved_at:         now
+    });
+    if (insertErr) {
+      console.error(`[process-queue] ${rowId}: receipts insert error:`, insertErr.message);
+    }
 
     return { id: rowId, success: true };
   } catch (err) {

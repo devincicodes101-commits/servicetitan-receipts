@@ -1072,6 +1072,7 @@ async function loadReceiptsFromDB() {
           date:          r.saved_at ? new Date(r.saved_at).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '',
           savedDate:     r.saved_at || null,
           status:        localStatus,
+          source:        r.source || 'manual',
           extracting:    false,
           vendor:        r.vendor              || '',
           invoice:       r.invoice_no          || '',
