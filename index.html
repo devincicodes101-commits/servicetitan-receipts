@@ -1083,6 +1083,8 @@ async function loadReceiptsFromDB() {
           poNumber:      r.po_number           || '',
           requiredDate:  r.required_date       || '',
           vendorInvoiceNo: r.vendor_invoice_no || '',
+          tax:           r.tax      != null ? r.tax      : null,
+          shipping:      r.shipping != null ? r.shipping : null,
           lineItems: Array.isArray(r.items) ? r.items.map(i => ({
             vendorPartNo: i.vendorPartNo || '',
             stPartNo:     i.stPartNo     || '',
@@ -1595,7 +1597,10 @@ async function postToSTFromHistory(id) {
         poNumber:        r.poNumber,
         vendor:          r.vendor,
         vendorInvoiceNo: r.vendorInvoiceNo || r.invoice,
+        date:            r.invoiceDate,
         requiredDate:    r.requiredDate,
+        tax:             r.tax,
+        shipping:        r.shipping,
         jobId:           r.jobId,
         lineItems:       r.lineItems
       })

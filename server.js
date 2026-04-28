@@ -487,12 +487,15 @@ async function processOneQueueRow(sb, row) {
     let stPoId = null;
     try {
       const stResult = await createSTPurchaseOrder({
-        poNumber:       fields.poNumber        || null,
-        vendor:         fields.vendor          || null,
-        vendorInvoiceNo: fields.vendorInvoiceNo || fields.invoiceNo || null,
-        requiredDate:   fields.requiredDate    || null,
-        jobId:          fields.jobNo           || null,
-        lineItems:      fields.items           || []
+        poNumber:        fields.poNumber         || null,
+        vendor:          fields.vendor           || null,
+        vendorInvoiceNo: fields.vendorInvoiceNo  || fields.invoiceNo || null,
+        date:            fields.date             || null,
+        requiredDate:    fields.requiredDate     || null,
+        tax:             fields.tax              ?? null,
+        shipping:        fields.shipping         ?? null,
+        jobId:           fields.jobNo            || null,
+        lineItems:       fields.items            || []
       });
       stPoId = stResult.poId;
       console.log(`[process-queue] ${rowId}: ST PO created → id=${stPoId}`);
@@ -1142,8 +1145,28 @@ function extractFieldsFromLlama(content) {
     }
   }
 
-  console.log('[fields] extracted:', { vendor, invoiceNo, date, jobNo, total, poNumber, requiredDate, itemCount: items.length });
-  return { vendor, invoiceNo, date, jobNo, total, items, poNumber, requiredDate, vendorInvoiceNo };
+  // Extract tax amount
+  let tax = null;
+  for (const lbl of ['TAX', 'GST', 'HST', 'PST', 'VAT', 'SALES TAX', 'TAX AMOUNT', 'TOTAL TAX']) {
+    const rawTax = lmap[lbl];
+    if (rawTax) {
+      const n = parseFloat(rawTax.replace(/[$,]/g, ''));
+      if (!isNaN(n) && n >= 0) { tax = n; break; }
+    }
+  }
+
+  // Extract shipping/freight amount
+  let shipping = null;
+  for (const lbl of ['SHIPPING', 'FREIGHT', 'DELIVERY', 'SHIPPING & HANDLING', 'S&H', 'SHIPPING CHARGE', 'FREIGHT CHARGE']) {
+    const rawShip = lmap[lbl];
+    if (rawShip) {
+      const n = parseFloat(rawShip.replace(/[$,]/g, ''));
+      if (!isNaN(n) && n >= 0) { shipping = n; break; }
+    }
+  }
+
+  console.log('[fields] extracted:', { vendor, invoiceNo, date, jobNo, total, tax, shipping, poNumber, requiredDate, itemCount: items.length });
+  return { vendor, invoiceNo, date, jobNo, total, tax, shipping, items, poNumber, requiredDate, vendorInvoiceNo };
 }
 
 // ── Gemini SDK loader ──
@@ -1683,6 +1706,60 @@ async function lookupSTVendor(token, creds, vendorName) {
   }
 }
 
+// Search ST pricebook for a matching SKU by vendor part number, then description
+async function lookupSTSku(token, creds, vendorId, vendorPartNo, description) {
+  const h = { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey };
+  const base = 'https://api.servicetitan.io';
+  const tid = creds.tenantId;
+
+  async function getFirst(url) {
+    try {
+      const r = await fetch(url, { headers: h });
+      if (!r.ok) return null;
+      const d = await r.json();
+      const items = d.data || d.items || [];
+      return items[0] || null;
+    } catch { return null; }
+  }
+
+  const partNo = (vendorPartNo || '').trim();
+
+  // Search by vendor part number first
+  if (partNo && partNo.length > 1 && partNo !== 'N/A') {
+    const byPartWithVendor = vendorId && await getFirst(
+      `${base}/pricebook/v2/tenant/${tid}/materials?` + new URLSearchParams({ vendorId: String(vendorId), number: partNo, pageSize: '1', active: 'true' })
+    );
+    if (byPartWithVendor) {
+      console.log(`[sku-lookup] matched by part+vendor: id=${byPartWithVendor.id} for "${partNo}"`);
+      return { skuId: byPartWithVendor.id, vendorPartNumber: partNo };
+    }
+
+    const byPart = await getFirst(
+      `${base}/pricebook/v2/tenant/${tid}/materials?` + new URLSearchParams({ number: partNo, pageSize: '1', active: 'true' })
+    );
+    if (byPart) {
+      console.log(`[sku-lookup] matched by part: id=${byPart.id} for "${partNo}"`);
+      return { skuId: byPart.id, vendorPartNumber: partNo };
+    }
+  }
+
+  // Fallback: search by description
+  const desc = (description || '').trim().slice(0, 60);
+  if (desc.length > 3) {
+    const byDesc = await getFirst(
+      `${base}/pricebook/v2/tenant/${tid}/materials?` + new URLSearchParams({ searchQuery: desc, pageSize: '1', active: 'true' })
+    );
+    if (byDesc) {
+      const resolvedPart = partNo || byDesc.code || byDesc.number || 'N/A';
+      console.log(`[sku-lookup] matched by desc: id=${byDesc.id} for "${desc}"`);
+      return { skuId: byDesc.id, vendorPartNumber: resolvedPart };
+    }
+  }
+
+  console.log(`[sku-lookup] no match for partNo="${partNo}" desc="${desc}" — using default skuId`);
+  return null;
+}
+
 async function getSTLookups(token, creds) {
   const h = { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey };
   const base = 'https://api.servicetitan.io';
@@ -1722,24 +1799,48 @@ async function getSTLookups(token, creds) {
   return { typeId, businessUnitId, locationId };
 }
 
-async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, requiredDate, jobId, lineItems }) {
+async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems }) {
   const creds = getSTCreds();
   if (!creds) throw new Error('ServiceTitan credentials not configured');
 
+  // ── Validate required .env account settings up front ──
+  const businessUnitId    = parseInt(process.env.ST_BU_ID       || '');
+  const inventoryLocationId = parseInt(process.env.ST_LOCATION_ID || '');
+  if (!businessUnitId)      throw new Error('Missing ST_BU_ID in .env — visit /api/test-st to find your business unit IDs');
+  if (!inventoryLocationId) throw new Error('Missing ST_LOCATION_ID in .env — set it to your ServiceTitan inventory location ID');
+
   const token = await getSTToken(creds);
-  const [vendorId, lookups] = await Promise.all([
-    lookupSTVendor(token, creds, vendor),
-    getSTLookups(token, creds)
-  ]);
-  console.log(`[create-po] vendor="${vendor}" → vendorId=${vendorId}`, lookups);
 
-  if (!lookups.businessUnitId) throw new Error('ST businessUnitId not found — set ST_BU_ID in .env. Open /api/test-st to see available IDs.');
-  if (!lookups.locationId)     throw new Error('ST inventoryLocationId not found — set ST_LOCATION_ID in .env. Open /api/test-st to see available IDs.');
+  // typeId: .env override or auto-fetch first active PO type
+  let typeId = parseInt(process.env.ST_TYPE_ID || '');
+  if (!typeId) {
+    try {
+      const r = await fetch(
+        `https://api.servicetitan.io/inventory/v2/tenant/${creds.tenantId}/purchase-order-types?active=true&pageSize=1`,
+        { headers: { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey } }
+      );
+      if (r.ok) {
+        const d = await r.json();
+        typeId = (d.data || d.items || [])[0]?.id || 0;
+      }
+    } catch { /* leave 0 */ }
+    if (!typeId) throw new Error('No PO type found in ST — set ST_TYPE_ID in .env');
+  }
 
+  // ── Vendor lookup by extracted name ──
+  const vendorId = await lookupSTVendor(token, creds, vendor);
+  console.log(`[create-po] vendor="${vendor}" → vendorId=${vendorId}`);
+
+  // ── Date from receipt PDF, fall back to today ──
   const today = new Date().toISOString().slice(0, 10);
-  const defaultSkuId = parseInt(process.env.ST_DEFAULT_SKU_ID || '0') || 0;
+  const safeDate = (s) => {
+    if (!s) return null;
+    try { return new Date(s).toISOString().slice(0, 10); } catch { return null; }
+  };
+  const poDate      = safeDate(date)         || today;
+  const poRequiredOn = safeDate(requiredDate) || poDate;
 
-  // shipTo must be a CreateAddressRequest object
+  // ── shipTo address — always from .env (company-level fixed setting) ──
   const shipTo = {
     street:  (process.env.ST_SHIP_TO_STREET  || '').trim() || undefined,
     city:    (process.env.ST_SHIP_TO_CITY    || '').trim() || undefined,
@@ -1748,36 +1849,43 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, requir
     country: (process.env.ST_SHIP_TO_COUNTRY || 'US').trim()
   };
 
-  // Build items — if none extracted, use a single placeholder so the PO is valid
-  const rawItems = lineItems && lineItems.length > 0
+  // ── Line items — with per-item ST SKU lookup ──
+  const rawItems = (lineItems && lineItems.length > 0)
     ? lineItems
-    : [{ desc: vendorInvoiceNo || vendor || 'Receipt', qty: 1, unit: '0.00' }];
+    : [{ desc: vendorInvoiceNo || vendor || 'Receipt', qty: 1, unit: '0.00', vendorPartNo: '' }];
 
-  const items = rawItems.map(li => ({
-    skuId:            defaultSkuId,
-    vendorPartNumber: (li.vendorPartNo || li.stPartNo || 'N/A').trim() || 'N/A',
-    description:      (li.desc || vendor || 'Item').trim(),
-    quantity:         Math.max(1, parseFloat(li.qty) || 1),
-    cost:             parseFloat(li.unit) || 0
+  const defaultSkuId = parseInt(process.env.ST_DEFAULT_SKU_ID || '0') || 0;
+
+  const items = await Promise.all(rawItems.map(async (li) => {
+    const sku = await lookupSTSku(token, creds, vendorId, li.vendorPartNo || li.stPartNo, li.desc);
+    return {
+      skuId:            sku ? sku.skuId : defaultSkuId,
+      vendorPartNumber: sku ? sku.vendorPartNumber : ((li.vendorPartNo || li.stPartNo || 'N/A').trim() || 'N/A'),
+      description:      (li.desc || vendor || 'Item').trim(),
+      quantity:         Math.max(1, parseFloat(li.qty) || 1),
+      cost:             parseFloat(li.unit) || 0
+    };
   }));
 
+  // ── Build final payload — dynamic receipt values + fixed .env defaults ──
   const poBody = {
-    typeId:                   lookups.typeId,
-    number:                   poNumber         || undefined,
-    date:                     today,
-    requiredOn:               requiredDate     || today,
-    vendorId:                 vendorId         || undefined,
-    businessUnitId:           lookups.businessUnitId,
-    inventoryLocationId:      lookups.locationId,
+    typeId,
+    number:                   poNumber      || undefined,
+    date:                     poDate,
+    requiredOn:               poRequiredOn,
+    vendorId:                 vendorId      || undefined,
+    businessUnitId,
+    inventoryLocationId,
     shipTo,
-    tax:                      0,
-    shipping:                 0,
+    tax:                      parseFloat(tax)      || 0,
+    shipping:                 parseFloat(shipping) || 0,
     impactsTechnicianPayroll: false,
     memo:                     vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined,
     items
   };
-
   if (jobId) poBody.jobId = parseInt(jobId) || undefined;
+
+  console.log(`[create-po] payload:`, JSON.stringify(poBody));
 
   const poRes = await fetch(
     `https://api.servicetitan.io/inventory/v2/tenant/${creds.tenantId}/purchase-orders`,
@@ -1865,8 +1973,8 @@ app.post('/api/create-po', async (req, res) => {
     const creds = getSTCreds();
     if (!creds) return res.status(503).json({ error: 'ServiceTitan credentials not configured' });
 
-    const { poNumber, vendor, vendorInvoiceNo, poDate, requiredDate, jobId, lineItems } = req.body || {};
-    const result = await createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, requiredDate, jobId, lineItems });
+    const { poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems } = req.body || {};
+    const result = await createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems });
     return res.json({ success: true, ...result });
   } catch (err) {
     console.error('[create-po] error:', err.message, err.stack);
