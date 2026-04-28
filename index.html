@@ -1575,10 +1575,36 @@ function showHistoryDetails(r) {
   `;
 }
 
-function postToSTFromHistory(id) {
+async function postToSTFromHistory(id) {
   const r = receipts.find(x => x.id === id);
   if (!r) return;
-  r.status = 'pushed';
+
+  const btn = document.querySelector('.btn-st');
+  if (btn) { btn.textContent = 'Posting…'; btn.disabled = true; }
+
+  try {
+    const res = await fetch('/api/create-po', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        poNumber:        r.poNumber,
+        vendor:          r.vendor,
+        vendorInvoiceNo: r.vendorInvoiceNo || r.invoice,
+        requiredDate:    r.requiredDate,
+        jobId:           r.jobId,
+        lineItems:       r.lineItems
+      })
+    });
+    const json = await res.json();
+    if (!res.ok) { alert('ST error: ' + (json.error || 'Unknown')); if (btn) { btn.textContent = 'Post to ServiceTitan'; btn.disabled = false; } return; }
+    r.status = 'pushed';
+    r.stPurchaseOrderId = json.poId ? String(json.poId) : null;
+    if (r.dbId) {
+      fetch('/api/receipt-status', { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: r.dbId, status: 'pushed', stPurchaseOrderId: r.stPurchaseOrderId }) }).catch(() => {});
+    }
+  } catch (e) { alert('Network error: ' + e.message); if (btn) { btn.textContent = 'Post to ServiceTitan'; btn.disabled = false; } return; }
+
   renderHistoryList();
   showHistoryDetails(r);
   renderFeed('all');
