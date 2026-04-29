@@ -1833,6 +1833,40 @@ async function getSTLookups(token, creds) {
   return { typeId, businessUnitId, locationId };
 }
 
+async function lookupSTJob(token, creds, jobNo) {
+  if (!jobNo) return null;
+  const h = { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey };
+  const tid = creds.tenantId;
+  const base = 'https://api.servicetitan.io';
+
+  // Try direct ID lookup first (fast path when extracted number IS the ST job ID)
+  const parsed = parseInt(jobNo);
+  if (parsed) {
+    try {
+      const r = await fetch(`${base}/jpm/v2/tenant/${tid}/jobs/${parsed}`, { headers: h });
+      if (r.ok) {
+        const d = await r.json();
+        if (d.id) return d.id;
+      }
+    } catch { /* fall through */ }
+  }
+
+  // Try searching by job number field
+  try {
+    const r = await fetch(
+      `${base}/jpm/v2/tenant/${tid}/jobs?` + new URLSearchParams({ number: jobNo, pageSize: '1' }),
+      { headers: h }
+    );
+    if (r.ok) {
+      const d = await r.json();
+      const items = d.data || d.items || [];
+      if (items[0]?.id) return items[0].id;
+    }
+  } catch { /* fall through */ }
+
+  return null;
+}
+
 async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems }) {
   const creds = getSTCreds();
   if (!creds) throw new Error('ServiceTitan credentials not configured');
@@ -1916,7 +1950,16 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     memo:                     vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined,
     items
   };
-  if (jobId) poBody.jobId = parseInt(jobId) || undefined;
+  // ── Job lookup — verify the extracted job number is a real ST job before linking ──
+  if (jobId) {
+    const stJobId = await lookupSTJob(token, creds, String(jobId));
+    if (stJobId) {
+      poBody.jobId = stJobId;
+      console.log(`[create-po] jobId "${jobId}" → ST job ${stJobId}`);
+    } else {
+      console.warn(`[create-po] jobId "${jobId}" not found in ST — skipping job link`);
+    }
+  }
 
   console.log(`[create-po] payload:`, JSON.stringify(poBody));
 
