@@ -1593,17 +1593,7 @@ async function postToSTFromHistory(id) {
     const res = await fetch('/api/create-po', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        poNumber:        r.poNumber,
-        vendor:          r.vendor,
-        vendorInvoiceNo: r.vendorInvoiceNo || r.invoice,
-        date:            r.invoiceDate,
-        requiredDate:    r.requiredDate,
-        tax:             r.tax,
-        shipping:        r.shipping,
-        jobId:           r.jobId,
-        lineItems:       r.lineItems
-      })
+      body: JSON.stringify({ receiptId: id })
     });
     const json = await res.json();
     if (!res.ok) { alert('ST error: ' + (json.error || 'Unknown')); if (btn) { btn.textContent = 'Post to ServiceTitan'; btn.disabled = false; } return; }
