@@ -1685,31 +1685,45 @@ async function getSTToken(creds) {
 }
 
 async function lookupSTVendor(token, creds, vendorName) {
-  if (!vendorName) return null;
   const h = { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey };
   const base = `https://api.servicetitan.io/inventory/v2/tenant/${creds.tenantId}/vendors`;
-  const nameLower = vendorName.toLowerCase();
 
   async function searchVendors(params) {
     try {
-      const r = await fetch(`${base}?` + new URLSearchParams({ pageSize: '50', active: 'true', ...params }), { headers: h });
+      const r = await fetch(`${base}?` + new URLSearchParams({ pageSize: '200', active: 'true', ...params }), { headers: h });
       if (!r.ok) return [];
       const d = await r.json();
       return d.data || d.items || [];
     } catch { return []; }
   }
 
-  // 1. Exact name search
-  const exact = await searchVendors({ name: vendorName });
-  if (exact.length > 0) {
-    console.log(`[st-vendor] exact match "${vendorName}" → id=${exact[0].id}`);
-    return exact[0].id;
+  // Always fetch the full list for both matching and error reporting
+  const all = await searchVendors({});
+  const allNames = all.map(v => v.name).filter(Boolean);
+
+  if (!vendorName) return { vendorId: null, availableVendors: allNames };
+
+  const nameLower = vendorName.toLowerCase();
+
+  // 1. Exact name match (case-insensitive)
+  const exactMatch = all.find(v => (v.name || '').toLowerCase() === nameLower);
+  if (exactMatch) {
+    console.log(`[st-vendor] exact match "${vendorName}" → id=${exactMatch.id}`);
+    return { vendorId: exactMatch.id, availableVendors: allNames };
   }
 
-  // 2. Broader list — fuzzy match any vendor whose name contains a word from vendorName
-  const all = await searchVendors({ pageSize: '200' });
+  // 2. Contains match — vendor name contains the extracted name or vice versa
+  const containsMatch = all.find(v => {
+    const vn = (v.name || '').toLowerCase();
+    return vn.includes(nameLower) || nameLower.includes(vn);
+  });
+  if (containsMatch) {
+    console.log(`[st-vendor] contains match "${vendorName}" → "${containsMatch.name}" id=${containsMatch.id}`);
+    return { vendorId: containsMatch.id, availableVendors: allNames };
+  }
+
+  // 3. Word-overlap fuzzy match
   const words = nameLower.split(/\s+/).filter(w => w.length > 2);
-  // Score each vendor by how many words from vendorName appear in their name
   let best = null, bestScore = 0;
   for (const v of all) {
     const vn = (v.name || '').toLowerCase();
@@ -1718,11 +1732,11 @@ async function lookupSTVendor(token, creds, vendorName) {
   }
   if (best && bestScore > 0) {
     console.log(`[st-vendor] fuzzy match "${vendorName}" → "${best.name}" id=${best.id} (score=${bestScore})`);
-    return best.id;
+    return { vendorId: best.id, availableVendors: allNames };
   }
 
-  console.warn(`[st-vendor] no match for "${vendorName}" — available: ${all.map(v => v.name).join(', ')}`);
-  return null;
+  console.warn(`[st-vendor] no match for "${vendorName}" | ST has: ${allNames.join(', ')}`);
+  return { vendorId: null, availableVendors: allNames };
 }
 
 // Search ST pricebook for a matching SKU by vendor part number, then description
@@ -1836,8 +1850,15 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
   if (!typeId)              throw new Error('No PO type found — set ST_TYPE_ID in .env or visit /api/test-st');
 
   // ── Vendor lookup by extracted name ──
-  const vendorId = await lookupSTVendor(token, creds, vendor);
-  console.log(`[create-po] vendor="${vendor}" → vendorId=${vendorId}`);
+  const { vendorId, availableVendors } = await lookupSTVendor(token, creds, vendor);
+  console.log(`[create-po] vendor="${vendor}" → vendorId=${vendorId} | ST vendors: ${availableVendors.join(', ')}`);
+  if (!vendorId) {
+    throw new Error(
+      `Vendor "${vendor}" not found in ServiceTitan. ` +
+      `Available vendors: ${availableVendors.length ? availableVendors.join(', ') : '(none found)'}. ` +
+      `Add this vendor to ST first (Inventory → Vendors) then retry.`
+    );
+  }
 
   // ── Date from receipt PDF, fall back to today ──
   const today = new Date().toISOString().slice(0, 10);
@@ -1977,6 +1998,19 @@ app.get('/api/test-st', async (req, res) => {
     return res.json({ ok: true, step: 'done', result });
   } catch (err) {
     return res.json({ ok: false, step: 'error', error: err.message, result });
+  }
+});
+
+// ── ServiceTitan: list all vendors (debug) ──
+app.get('/api/st-vendors', async (req, res) => {
+  try {
+    const creds = getSTCreds();
+    if (!creds) return res.status(503).json({ error: 'No ST credentials' });
+    const token = await getSTToken(creds);
+    const { availableVendors } = await lookupSTVendor(token, creds, null);
+    return res.json({ count: availableVendors.length, vendors: availableVendors });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
 });
 
