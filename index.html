@@ -592,7 +592,7 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
         <select class="tri-select" id="historyFilter">
           <option value="all">All Status</option>
           <option value="saved">Saved</option>
-          <option value="pushed">Pushed to ST</option>
+          <option value="pushed">Posted to ST</option>
           <option value="pending">Pending</option>
         </select>
       </div>
@@ -1328,15 +1328,18 @@ function showReviewDetails(r) {
   const saveBtn = document.getElementById('reviewSaveBtn');
   const postBtn = document.getElementById('reviewPostBtn');
 
-  if (r.status === 'saved') {
+  // Save and Post are independent — track separately
+  if (r.status === 'saved' || r.savedDate) {
     saveBtn.textContent = 'Saved ✓';
     saveBtn.classList.add('saved');
+    saveBtn.disabled = true;
   } else {
     saveBtn.textContent = 'Save receipt';
     saveBtn.classList.remove('saved');
+    saveBtn.disabled = false;
   }
   if (r.status === 'pushed') {
-    postBtn.textContent = 'Pushed to ST ✓';
+    postBtn.textContent = 'Posted to ST ✓';
     postBtn.disabled = true;
   } else {
     postBtn.textContent = 'Post to ServiceTitan';
@@ -1409,33 +1412,35 @@ async function postToST(id) {
   postBtn.disabled = true;
 
   try {
-    const res  = await fetch('/api/create-po', {
+    const res = await fetch('/api/create-po', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        poNumber:       r.poNumber,
-        vendor:         r.vendor,
+        poNumber:        r.poNumber,
+        vendor:          r.vendor,
         vendorInvoiceNo: r.vendorInvoiceNo,
-        poDate:         r.invoiceDate,
-        requiredDate:   r.requiredDate,
-        total:          r.amount,
-        jobId:          r.jobId,
-        lineItems:      r.lineItems
+        date:            r.invoiceDate,
+        requiredDate:    r.requiredDate,
+        tax:             r.tax,
+        shipping:        r.shipping,
+        jobId:           r.jobId,
+        lineItems:       r.lineItems
       })
     });
     const json = await res.json();
 
     if (!res.ok || json.error) {
-      // ST credentials not set up yet — mark as pushed anyway and show info
       if (res.status === 503) {
-        alert('ServiceTitan credentials not configured yet.\n\nAdd ST_TENANT_ID, ST_APP_KEY, ST_CLIENT_ID, ST_CLIENT_SECRET to your .env file on the VPS to enable live posting.\n\nMarking as posted for now.');
+        alert('ServiceTitan credentials not configured. Add ST_* vars to .env on VPS.');
       } else {
         alert('ServiceTitan error: ' + (json.error || 'Unknown error'));
-        postBtn.textContent = 'Post to ServiceTitan';
-        postBtn.disabled = false;
-        return;
       }
+      postBtn.textContent = 'Post to ServiceTitan';
+      postBtn.disabled = false;
+      return;
     }
+
+    r.stPurchaseOrderId = json.poId ? String(json.poId) : null;
   } catch(e) {
     alert('Network error: ' + e.message);
     postBtn.textContent = 'Post to ServiceTitan';
@@ -1443,17 +1448,15 @@ async function postToST(id) {
     return;
   }
 
+  // Posted to ST — status is 'pushed', independent of save
   r.status    = 'pushed';
   r.savedDate = r.savedDate || nowISO();
-  postBtn.textContent = 'Pushed to ST ✓';
-  const saveBtn = document.getElementById('reviewSaveBtn');
-  saveBtn.textContent = 'Saved ✓';
-  saveBtn.classList.add('saved');
+  postBtn.textContent = 'Posted to ST ✓';
+  postBtn.disabled = true;
   renderReviewList();
   renderHistoryList();
   renderFeed('all');
   updateStats();
-  // Persist to DB
   if (r.dbId) {
     fetch('/api/receipt-status', {
       method: 'PATCH',
@@ -1497,7 +1500,7 @@ function renderHistoryList() {
     const typeLabel = r.type === 'application/pdf' ? 'PDF' : (r.type || '').split('/')[1]?.toUpperCase().slice(0,4) || 'FILE';
     const isImg = (r.type || '').startsWith('image/');
     const badgeClass = r.status === 'pushed' ? 'pushed' : 'saved';
-    const badgeText  = r.source === 'gmail' ? 'Gmail' : (r.status === 'pushed' ? 'In ST' : 'Saved');
+    const badgeText  = r.status === 'pushed' ? 'Posted to ST' : 'Saved';
     const shortId    = r.invoice || r.gmailId?.slice(0,6) || r.dbId?.slice(0,6) || r.id.slice(0,8);
     item.innerHTML = `
       <div class="rec-icon ${isImg ? 'img-icon' : ''}">${typeLabel}</div>
@@ -1519,7 +1522,7 @@ function showHistoryDetails(r) {
   document.getElementById('historyDeleteBtn').style.display = 'flex';
   const body = document.getElementById('historyDetailsBody');
   const badgeClass = r.status === 'pushed' ? 'pushed' : 'saved';
-  const badgeText  = r.status === 'pushed' ? '✓ In ServiceTitan' : 'Saved';
+  const badgeText  = r.status === 'pushed' ? '✓ Posted to ST' : 'Saved';
   body.innerHTML = `
     <div>
       <div class="detail-section-label">Receipt</div>
@@ -1578,7 +1581,11 @@ function showHistoryDetails(r) {
         </div>
       </div>
     </div>
-    ${r.status !== 'pushed' ? `<div class="detail-divider"></div><button class="btn-st" onclick="postToSTFromHistory('${r.id}')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M22 2L11 13"/><path d="M22 2L15 22 11 13 2 9l20-7z"/></svg>Post to ServiceTitan</button>` : ''}
+    <div class="detail-divider"></div>
+    ${r.status === 'pushed'
+      ? `<button class="btn-st" disabled style="opacity:.5;cursor:default"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M22 2L11 13"/><path d="M22 2L15 22 11 13 2 9l20-7z"/></svg>Posted to ST ✓</button>`
+      : `<button class="btn-st" onclick="postToSTFromHistory('${r.id}')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M22 2L11 13"/><path d="M22 2L15 22 11 13 2 9l20-7z"/></svg>Post to ServiceTitan</button>`
+    }
   `;
 }
 
