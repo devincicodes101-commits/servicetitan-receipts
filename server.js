@@ -2065,59 +2065,8 @@ app.post('/api/create-po', async (req, res) => {
     const creds = getSTCreds();
     if (!creds) return res.status(503).json({ error: 'ServiceTitan credentials not configured' });
 
-    const sb = await getSupabaseAdmin();
-    const { receiptId } = req.body || {};
-
-    let poData, sourceTable = null;
-
-    if (receiptId) {
-      // Load all fields directly from Supabase — single source of truth
-      let row = null;
-      const { data: rRow } = await sb.from('receipts').select('*').eq('id', receiptId).single();
-      if (rRow) { row = rRow; sourceTable = 'receipts'; }
-
-      if (!row) {
-        const { data: qRow } = await sb.from('upload_queue').select('*').eq('id', receiptId).single();
-        if (qRow) { row = qRow; sourceTable = 'upload_queue'; }
-      }
-
-      if (!row) return res.status(404).json({ error: `Receipt ${receiptId} not found in database` });
-
-      poData = {
-        poNumber:        row.po_number         || null,
-        vendor:          row.vendor            || null,
-        vendorInvoiceNo: row.vendor_invoice_no || row.invoice_no || null,
-        date:            row.date              || null,
-        requiredDate:    row.required_date     || null,
-        tax:             row.tax               ?? null,
-        shipping:        row.shipping          ?? null,
-        jobId:           row.job_no            || null,
-        lineItems:       Array.isArray(row.items) ? row.items : []
-      };
-      console.log(`[create-po] loaded from ${sourceTable}: vendor="${poData.vendor}" date="${poData.date}" items=${poData.lineItems.length}`);
-    } else {
-      // Fallback: accept all fields from body (backwards compatible)
-      const { poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems } = req.body || {};
-      poData = { poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems };
-    }
-
-    const result = await createSTPurchaseOrder(poData);
-
-    // Write ST PO ID back to DB
-    if (sourceTable && result.poId) {
-      await sb.from(sourceTable)
-        .update({ st_purchase_order_id: String(result.poId) })
-        .eq('id', receiptId)
-        .catch(e => console.warn('[create-po] could not update st_purchase_order_id:', e.message));
-      if (sourceTable === 'upload_queue') {
-        // Also update receipts table if a matching receipt exists
-        await sb.from('receipts')
-          .update({ status: 'pushed', st_purchase_order_id: String(result.poId) })
-          .eq('id', receiptId)
-          .catch(() => {});
-      }
-    }
-
+    const { poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems } = req.body || {};
+    const result = await createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems });
     return res.json({ success: true, ...result });
   } catch (err) {
     console.error('[create-po] error:', err.message, err.stack);
