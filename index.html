@@ -648,11 +648,11 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
           <div class="gmail-page-sub">Receipts emailed in via n8n — processed automatically</div>
         </div>
         <div class="gmail-page-btns">
-          <button class="btn-ghost">
+          <button class="btn-ghost" onclick="loadGmailView()">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
             Refresh
           </button>
-          <button class="btn-primary">
+          <button class="btn-primary" id="gmailProcessBtn" onclick="gmailProcessNow()">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
             Process Now
           </button>
@@ -824,6 +824,7 @@ function navigate(viewId) {
 
   if (viewId === 'review')  renderReviewList();
   if (viewId === 'history') renderHistoryList();
+  if (viewId === 'gmail')   loadGmailView();
 }
 
 document.querySelectorAll('.nav-item[data-view]').forEach(item => {
@@ -842,6 +843,76 @@ document.querySelectorAll('.feed-tab').forEach(tab => {
 // history search + filter
 document.getElementById('historySearch').addEventListener('input', renderHistoryList);
 document.getElementById('historyFilter').addEventListener('change', renderHistoryList);
+
+// ============================================================
+// GMAIL RECEIPTS VIEW
+// ============================================================
+async function loadGmailView() {
+  try {
+    const res = await fetch('/api/gmail-receipts');
+    if (!res.ok) return;
+    const { receipts = [] } = await res.json();
+
+    const total   = receipts.length;
+    const pending = receipts.filter(r => r.status === 'pending' || r.status === 'processing').length;
+    const done    = receipts.filter(r => r.status === 'done').length;
+    const failed  = receipts.filter(r => r.status === 'failed').length;
+
+    document.getElementById('gTotal').textContent   = total;
+    document.getElementById('gPending').textContent = pending;
+    document.getElementById('gDone').textContent    = done;
+    document.getElementById('gFailed').textContent  = failed;
+
+    const tbody = document.getElementById('gmailTableBody');
+    if (receipts.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state" style="padding:40px 16px">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+        <p>No Gmail receipts yet.<br>Click <strong>Process Now</strong> to pull from inbox.</p>
+      </div></td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = receipts.map(r => {
+      const statusClass = r.status === 'done' ? 'done' : r.status === 'failed' ? 'failed' : 'pending';
+      const ts = r.processed_at || r.created_at || '';
+      const displayDate = ts ? new Date(ts).toLocaleString() : '—';
+      const result = r.result || {};
+      const vendor = r.vendor || result.vendor || '—';
+      const fileName = r.file_name || r.storage_path?.split('/').pop() || '—';
+      const from = r.from_email || r.sender || vendor;
+      const subject = r.subject || fileName;
+      const statusLabel = r.status === 'done' ? '✓ Done' : r.status === 'failed' ? '✗ Failed' : r.status === 'processing' ? '⟳ Processing' : '● Pending';
+      return `<tr>
+        <td>${from}</td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${subject}</td>
+        <td class="muted" style="font-size:11px">${fileName}</td>
+        <td class="muted">${displayDate}</td>
+        <td><span class="gmail-status-pill ${statusClass}">${statusLabel}</span></td>
+        <td style="color:#c0392b;font-size:11px;max-width:180px">${r.error || ''}</td>
+      </tr>`;
+    }).join('');
+
+    // Auto-refresh while any items are still processing
+    if (pending > 0) setTimeout(loadGmailView, 4000);
+  } catch (e) {
+    console.error('loadGmailView:', e);
+  }
+}
+
+async function gmailProcessNow() {
+  const btn = document.getElementById('gmailProcessBtn');
+  btn.textContent = 'Processing…';
+  btn.disabled = true;
+  try {
+    await fetch('/api/process-queue', { method: 'POST' });
+    await new Promise(r => setTimeout(r, 1500));
+    await loadGmailView();
+    await loadReceiptsFromDB();
+    renderHistoryList();
+  } catch(e) { console.error('gmailProcessNow:', e); }
+  btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg> Process Now`;
+  btn.disabled = false;
+}
 
 // kick off auth — shows login screen or app depending on existing session
 initAuth();

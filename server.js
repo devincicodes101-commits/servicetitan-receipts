@@ -2374,17 +2374,17 @@ app.patch('/api/receipt-status', async (req, res) => {
   }
 });
 
-// ── Gmail receipts history ──
+// ── Gmail receipts — all statuses for the Gmail Receipts page ──
 app.get('/api/gmail-receipts', async (req, res) => {
   try {
     const sb = await getSupabaseAdmin();
-    const { data, error } = await sb.from('upload_queue')
+    // incoming_receipts = email-sourced receipts; return all statuses so the page shows live progress
+    const { data: incoming, error: e1 } = await sb.from('incoming_receipts')
       .select('*')
-      .eq('status', 'done')
-      .order('processed_at', { ascending: false })
+      .order('created_at', { ascending: false })
       .limit(200);
-    if (error) return res.status(500).json({ error: error.message });
-    return res.json({ receipts: data || [] });
+    if (e1) return res.status(500).json({ error: e1.message });
+    return res.json({ receipts: incoming || [] });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
