@@ -1901,7 +1901,9 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     try { return new Date(s).toISOString().slice(0, 10); } catch { return null; }
   };
   const poDate      = safeDate(date)         || today;
-  const poRequiredOn = safeDate(requiredDate) || poDate;
+  const rawRequiredOn = safeDate(requiredDate) || poDate;
+  // ST rejects requiredOn before the PO creation date (today)
+  const poRequiredOn = rawRequiredOn < today ? today : rawRequiredOn;
 
   // ── shipTo — CreateShipToRequest: { description, address: CreateAddressRequest } ──
   const shipTo = {
