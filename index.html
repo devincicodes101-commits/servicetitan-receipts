@@ -282,43 +282,45 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
 /* ============ LOGIN OVERLAY ============ */
 #loginOverlay {
   position: fixed; inset: 0; z-index: 9999;
-  background: radial-gradient(ellipse at top left, rgba(255,90,43,.08), transparent 40%),
-              radial-gradient(ellipse at bottom right, rgba(191,217,230,.3), transparent 50%),
-              var(--bg);
+  background: #f5f3ef;
   display: flex; align-items: center; justify-content: center;
 }
 .login-card {
-  background: var(--card-2); border: 1px solid var(--line); border-radius: 24px;
-  padding: 44px 40px 36px; width: 100%; max-width: 400px;
-  box-shadow: var(--shadow-md); display: flex; flex-direction: column; gap: 18px;
-  animation: fadeUp .5s cubic-bezier(.22,1,.36,1);
+  background: #fff; border: 1px solid #e8e4de; border-radius: 20px;
+  padding: 52px 48px; width: 100%; max-width: 420px;
+  box-shadow: 0 4px 40px rgba(0,0,0,.07);
+  display: flex; flex-direction: column; gap: 0;
+  animation: fadeUp .4s cubic-bezier(.22,1,.36,1);
 }
 .login-logo {
-  width: 52px; height: 52px; background: var(--ink); border-radius: 14px;
-  display: grid; place-items: center; margin-bottom: 4px;
+  width: 48px; height: 48px; background: #1a1a1a; border-radius: 12px;
+  display: grid; place-items: center; margin-bottom: 28px;
 }
-.login-logo svg { width: 28px; height: 28px; color: var(--bg); }
-.login-title { font-family: 'Fraunces', serif; font-weight: 400; font-size: 28px; letter-spacing: -.02em; line-height: 1.1; }
+.login-logo svg { width: 24px; height: 24px; color: #fff; }
+.login-title {
+  font-family: 'Fraunces', serif; font-weight: 400; font-size: 30px;
+  letter-spacing: -.03em; line-height: 1.15; color: #1a1a1a; margin-bottom: 8px;
+}
 .login-title em { font-style: italic; color: var(--accent); }
-.login-sub { font-size: 13px; color: var(--ink-mute); margin-top: -8px; }
-.login-field { display: flex; flex-direction: column; gap: 6px; }
-.login-field label { font-family: 'JetBrains Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-mute); }
+.login-sub { font-size: 14px; color: #888; margin-bottom: 36px; }
+.login-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.login-field label { font-size: 12px; font-weight: 600; color: #555; letter-spacing: .01em; }
 .login-input {
-  background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px;
-  padding: 11px 14px; font-family: inherit; font-size: 14px; color: var(--ink);
-  outline: none; transition: border-color .15s; width: 100%;
+  background: #faf9f7; border: 1.5px solid #e4e0d9; border-radius: 10px;
+  padding: 13px 16px; font-family: inherit; font-size: 15px; color: #1a1a1a;
+  outline: none; transition: border-color .15s, box-shadow .15s; width: 100%; box-sizing: border-box;
 }
-.login-input:focus { border-color: var(--ink); }
+.login-input:focus { border-color: #1a1a1a; box-shadow: 0 0 0 3px rgba(26,26,26,.06); }
 .login-btn {
-  background: var(--ink); color: var(--bg); border: none; padding: 13px 20px;
-  border-radius: 12px; font-family: inherit; font-weight: 700; font-size: 14px;
-  cursor: pointer; transition: all .15s; width: 100%; margin-top: 4px;
+  background: #1a1a1a; color: #fff; border: none; padding: 14px 20px;
+  border-radius: 11px; font-family: inherit; font-weight: 600; font-size: 15px;
+  cursor: pointer; transition: all .15s; width: 100%; margin-top: 8px; letter-spacing: .01em;
 }
 .login-btn:hover { background: var(--accent); }
-.login-btn:disabled { opacity: .5; cursor: default; background: var(--ink); }
+.login-btn:disabled { opacity: .45; cursor: default; background: #1a1a1a; }
 .login-error {
-  font-size: 12px; color: #c0392b; background: #fdecea;
-  border-radius: 8px; padding: 10px 12px; display: none;
+  font-size: 13px; color: #c0392b; background: #fdecea;
+  border-radius: 8px; padding: 11px 14px; display: none; margin-top: 4px;
 }
 .login-error.visible { display: block; }
 
@@ -364,12 +366,10 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
     <div class="login-logo">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg>
     </div>
-    <div>
-      <div class="login-title">Sign in to <em>continue.</em></div>
-      <div class="login-sub">ServiceTitan Receipts — upload, extract, push.</div>
-    </div>
+    <div class="login-title">Sign in to <em>continue.</em></div>
+    <div class="login-sub">ServiceTitan Receipts — upload, extract, push.</div>
     <div class="login-field">
-      <label for="loginEmail">Email</label>
+      <label for="loginEmail">Email address</label>
       <input class="login-input" type="email" id="loginEmail" placeholder="you@company.com" autocomplete="email" />
     </div>
     <div class="login-field">
