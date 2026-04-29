@@ -1699,9 +1699,12 @@ async function postToSTFromHistory(id) {
   updateStats();
 }
 
-function deleteSelected() {
+async function deleteSelected() {
   if (!selectedId) return;
-  receipts = receipts.filter(r => r.id !== selectedId);
+  const r = receipts.find(x => x.id === selectedId);
+
+  // Remove from memory immediately
+  receipts = receipts.filter(x => x.id !== selectedId);
   selectedId = null;
   document.getElementById('historyDeleteBtn').style.display = 'none';
   document.getElementById('historyPreviewBody').innerHTML = `<div class="preview-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><p>Select a receipt from the list</p></div>`;
@@ -1710,6 +1713,16 @@ function deleteSelected() {
   renderHistoryList();
   renderFeed('all');
   updateStats();
+
+  // Persist deletion to DB — try all known IDs for this receipt
+  if (r) {
+    const ids = [r.dbId, r.incomingId, r.gmailId].filter(Boolean);
+    // Also try the raw ID if it's a plain UUID (not prefixed)
+    if (r.id && !r.id.startsWith('DB-') && !r.id.startsWith('INC-')) ids.push(r.id);
+    for (const dbId of ids) {
+      fetch(`/api/receipt/${dbId}`, { method: 'DELETE' }).catch(() => {});
+    }
+  }
 }
 
 // ============================================================

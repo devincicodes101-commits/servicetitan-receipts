@@ -670,6 +670,7 @@ app.use(async (req, res, next) => {
     '/api/receipts-list',
     '/api/gmail-receipts',
     '/api/receipt-status',
+    '/api/receipt/',
     '/api/incoming-history',
     '/api/test-st'
   ];
@@ -2368,6 +2369,24 @@ app.patch('/api/receipt-status', async (req, res) => {
     if (stPurchaseOrderId) update.st_purchase_order_id = stPurchaseOrderId;
     const { error } = await sb.from('receipts').update(update).eq('id', id);
     if (error) return res.status(500).json({ error: error.message });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Delete a receipt from DB ──
+app.delete('/api/receipt/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: 'Missing id' });
+    const sb = await getSupabaseAdmin();
+    // Try deleting from receipts table
+    await sb.from('receipts').delete().eq('id', id);
+    // Also try upload_queue (Gmail receipts live there)
+    await sb.from('upload_queue').delete().eq('id', id);
+    // Also try incoming_receipts
+    await sb.from('incoming_receipts').delete().eq('id', id);
     return res.json({ success: true });
   } catch (err) {
     return res.status(500).json({ error: err.message });
