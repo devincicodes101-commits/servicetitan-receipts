@@ -1874,18 +1874,24 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
 
   const token = await getSTToken(creds);
 
-  // Auto-lookup account-level IDs (env vars override auto-discovery)
-  const lookups = await getSTLookups(token, creds);
-  const businessUnitId    = parseInt(process.env.ST_BU_ID       || '') || lookups.businessUnitId;
+  // ── Run all ST lookups in parallel ──
+  const t0 = Date.now();
+  const [lookups, vendorResult, resolvedJobId] = await Promise.all([
+    getSTLookups(token, creds),
+    lookupSTVendor(token, creds, vendor),
+    lookupSTJob(token, creds, jobId ? String(jobId) : null)
+  ]);
+  console.log(`[create-po] parallel ST lookups done in ${Date.now() - t0}ms`);
+
+  const businessUnitId      = parseInt(process.env.ST_BU_ID       || '') || lookups.businessUnitId;
   const inventoryLocationId = parseInt(process.env.ST_LOCATION_ID || '') || lookups.locationId;
-  const typeId            = parseInt(process.env.ST_TYPE_ID     || '') || lookups.typeId;
+  const typeId              = parseInt(process.env.ST_TYPE_ID     || '') || lookups.typeId;
 
   if (!businessUnitId)      throw new Error('No business unit found — set ST_BU_ID in .env or visit /api/test-st');
   if (!inventoryLocationId) throw new Error('No inventory location found — set ST_LOCATION_ID in .env or visit /api/test-st');
   if (!typeId)              throw new Error('No PO type found — set ST_TYPE_ID in .env or visit /api/test-st');
 
-  // ── Vendor lookup by extracted name ──
-  const { vendorId, availableVendors } = await lookupSTVendor(token, creds, vendor);
+  const { vendorId, availableVendors } = vendorResult;
   console.log(`[create-po] vendor="${vendor}" → vendorId=${vendorId} | ST vendors: ${availableVendors.join(', ')}`);
   if (!vendorId) {
     throw new Error(
@@ -1953,15 +1959,12 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     memo:                     vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined,
     items
   };
-  // ── Job lookup — verify the extracted job number is a real ST job before linking ──
-  if (jobId) {
-    const stJobId = await lookupSTJob(token, creds, String(jobId));
-    if (stJobId) {
-      poBody.jobId = stJobId;
-      console.log(`[create-po] jobId "${jobId}" → ST job ${stJobId}`);
-    } else {
-      console.warn(`[create-po] jobId "${jobId}" not found in ST — skipping job link`);
-    }
+  // Job was already resolved in the parallel lookup above
+  if (resolvedJobId) {
+    poBody.jobId = resolvedJobId;
+    console.log(`[create-po] jobId "${jobId}" → ST job ${resolvedJobId}`);
+  } else if (jobId) {
+    console.warn(`[create-po] jobId "${jobId}" not found in ST — skipping job link`);
   }
 
   console.log(`[create-po] payload:`, JSON.stringify(poBody));
