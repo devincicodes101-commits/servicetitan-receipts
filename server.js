@@ -2305,7 +2305,7 @@ app.post('/api/queue-manual-upload', upload.single('receipt'), async (req, res) 
 
     if (insertErr) return res.status(500).json({ error: insertErr.message });
 
-    const incoming = { id: row.id, file_url: fileUrl, file_name: fileName, user_id: userId };
+    const incoming = { id: row.id, file_url: fileUrl, file_name: fileName, user_id: userId, storage_path: storagePath };
     processIncomingForST(sb, incoming).catch(err =>
       console.error(`[queue-manual-upload] bg error for ${row.id}:`, err.message)
     );
@@ -2326,6 +2326,23 @@ app.get('/api/incoming-status/:id', async (req, res) => {
       .select('id, status, error, result, processed_at').eq('id', id).single();
     if (error || !row) return res.status(404).json({ error: 'Not found' });
     return res.json({ status: row.status, error: row.error || null, data: row.result || null });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── In-flight manual uploads (pending/processing) — lets frontend resume polling after refresh ──
+app.get('/api/incoming-pending', async (req, res) => {
+  try {
+    const sb = await getSupabaseAdmin();
+    const cutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // last hour only
+    const { data, error } = await sb.from('incoming_receipts')
+      .select('id, file_name, file_url, storage_path, status, created_at')
+      .in('status', ['pending', 'processing'])
+      .gte('created_at', cutoff)
+      .order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ items: data || [] });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
