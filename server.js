@@ -19,6 +19,7 @@ const { serve } = require('inngest/express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const GEMINI_MODEL = 'gemini-2.5-pro';
+const GEMINI_FALLBACK_MODEL = 'gemini-2.0-flash';
 
 // ── Inngest client ──
 const inngest = new Inngest({ id: 'receiptflow' });
@@ -108,7 +109,7 @@ async function processRowCore(sb, incoming, fileBuffer, mimeType) {
   try {
     console.log(`[process-incoming] ${rowId}: processing ${fileBuffer.length} bytes, mime=${mimeType}`);
 
-    const geminiOutput = await parseWithGemini(fileBuffer, mimeType);
+    const geminiOutput = await parseWithGeminiFallback(fileBuffer, mimeType);
     const fields = extractFieldsFromLlama(geminiOutput);
     console.log(`[process-incoming] ${rowId}: fields=`, JSON.stringify(fields));
 
@@ -362,7 +363,7 @@ async function processIncomingForST(sb, incoming) {
 
     await sb.from('incoming_receipts').update({ status: 'processing' }).eq('id', rowId);
 
-    const geminiOutput = await parseWithGemini(fileBuffer, mimeType);
+    const geminiOutput = await parseWithGeminiFallback(fileBuffer, mimeType);
     const fields = extractFieldsFromLlama(geminiOutput);
     console.log(`[process-st] ${rowId}: fields=`, JSON.stringify(fields));
 
@@ -439,7 +440,7 @@ async function processOneQueueRow(sb, row) {
 
     console.log(`[process-queue] ${rowId}: downloaded ${fileBuffer.length} bytes, mime=${mimeType}`);
 
-    const geminiOutput = await parseWithGemini(fileBuffer, mimeType);
+    const geminiOutput = await parseWithGeminiFallback(fileBuffer, mimeType);
     const fields = extractFieldsFromLlama(geminiOutput);
     console.log(`[process-queue] ${rowId}: fields=`, JSON.stringify(fields));
 
@@ -1189,7 +1190,7 @@ async function getGeminiClient() {
 }
 
 // ── Gemini helper using official SDK ──
-async function parseWithGemini(fileBuffer, mimeType) {
+async function parseWithGemini(fileBuffer, mimeType, model = GEMINI_MODEL) {
   const ai = await getGeminiClient();
 
   const prompt = `You are a receipt and invoice parser. Extract ALL content from this document exactly as printed.
@@ -1258,7 +1259,7 @@ IMPORTANT: vendorName must be the company that ISSUED this invoice (the seller/s
 
     const response = await withTimeout(
       ai.models.generateContent({
-        model: GEMINI_MODEL,
+        model,
         contents: [
           { text: prompt },
           { fileData: { mimeType, fileUri: uploadedFile.uri } }
@@ -1270,14 +1271,14 @@ IMPORTANT: vendorName must be the company that ISSUED this invoice (the seller/s
     const text = response.text || '';
     if (!text) throw new Error('Gemini returned empty response');
 
-    console.log('[gemini] output preview:', text.substring(0, 300));
+    console.log(`[gemini] (${model}) output preview:`, text.substring(0, 300));
     return text;
   }
 
   // For images, use inlineData directly
   const response = await withTimeout(
     ai.models.generateContent({
-      model: GEMINI_MODEL,
+      model,
       contents: [
         { text: prompt },
         {
@@ -1294,8 +1295,20 @@ IMPORTANT: vendorName must be the company that ISSUED this invoice (the seller/s
   const text = response.text || '';
   if (!text) throw new Error('Gemini returned empty response');
 
-  console.log('[gemini] output preview:', text.substring(0, 300));
+  console.log(`[gemini] (${model}) output preview:`, text.substring(0, 300));
   return text;
+}
+
+async function parseWithGeminiFallback(fileBuffer, mimeType) {
+  try {
+    return await parseWithGemini(fileBuffer, mimeType, GEMINI_MODEL);
+  } catch (err) {
+    if (/503|UNAVAILABLE|high demand|quota/i.test(err.message)) {
+      console.warn(`[gemini] ${GEMINI_MODEL} unavailable, falling back to ${GEMINI_FALLBACK_MODEL}`);
+      return await parseWithGemini(fileBuffer, mimeType, GEMINI_FALLBACK_MODEL);
+    }
+    throw err;
+  }
 }
 
 app.post('/api/extract', upload.single('receipt'), async (req, res) => {
@@ -1309,7 +1322,7 @@ app.post('/api/extract', upload.single('receipt'), async (req, res) => {
 
     console.log('[extract] mimetype:', mimeType, '| size:', fileBuffer.length, '| file:', req.file.originalname);
 
-    const geminiOutput = await parseWithGemini(fileBuffer, mimeType);
+    const geminiOutput = await parseWithGeminiFallback(fileBuffer, mimeType);
     console.log('[extract] Gemini output preview:', geminiOutput.substring(0, 500));
 
     const imageDataUrl = mimeType !== 'application/pdf'
@@ -1380,7 +1393,7 @@ app.post('/api/extract-url', async (req, res) => {
     const fileBuffer = Buffer.from(await fileRes.arrayBuffer());
     console.log('[extract-url] downloaded', fileBuffer.length, 'bytes');
 
-    const geminiOutput = await parseWithGemini(fileBuffer, mType);
+    const geminiOutput = await parseWithGeminiFallback(fileBuffer, mType);
     const fields = extractFieldsFromLlama(geminiOutput);
 
     return res.json({
