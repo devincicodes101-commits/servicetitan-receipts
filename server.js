@@ -1239,23 +1239,33 @@ After all document content above, write a line containing only ---JSON--- then a
 Fill every field from the document. Use empty string for missing text, 0 for missing numbers, YYYY-MM-DD for dates. For lineItems, include one entry per product/material row.
 IMPORTANT: vendorName must be the company that ISSUED this invoice (the seller/supplier). Never use the customer name, bill-to name, or any watermark/logo company name that represents the recipient of the invoice.`;
 
+  const withTimeout = (promise, ms, label) => {
+    const timer = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Gemini ${label} timed out after ${ms / 1000}s`)), ms)
+    );
+    return Promise.race([promise, timer]);
+  };
+
   if (mimeType === 'application/pdf') {
     // Upload via Files API so Gemini processes every page of the PDF
     const blob = new Blob([fileBuffer], { type: mimeType });
-    const uploadedFile = await ai.files.upload({
-      file: blob,
-      config: { mimeType, displayName: 'receipt.pdf' }
-    });
+    const uploadedFile = await withTimeout(
+      ai.files.upload({ file: blob, config: { mimeType, displayName: 'receipt.pdf' } }),
+      60_000, 'file upload'
+    );
 
     console.log('[gemini] uploaded PDF for multi-page processing, uri:', uploadedFile.uri);
 
-    const response = await ai.models.generateContent({
-      model: GEMINI_MODEL,
-      contents: [
-        { text: prompt },
-        { fileData: { mimeType, fileUri: uploadedFile.uri } }
-      ]
-    });
+    const response = await withTimeout(
+      ai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: [
+          { text: prompt },
+          { fileData: { mimeType, fileUri: uploadedFile.uri } }
+        ]
+      }),
+      180_000, 'generateContent'
+    );
 
     const text = response.text || '';
     if (!text) throw new Error('Gemini returned empty response');
@@ -1265,18 +1275,21 @@ IMPORTANT: vendorName must be the company that ISSUED this invoice (the seller/s
   }
 
   // For images, use inlineData directly
-  const response = await ai.models.generateContent({
-    model: GEMINI_MODEL,
-    contents: [
-      { text: prompt },
-      {
-        inlineData: {
-          mimeType,
-          data: fileBuffer.toString('base64')
+  const response = await withTimeout(
+    ai.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: [
+        { text: prompt },
+        {
+          inlineData: {
+            mimeType,
+            data: fileBuffer.toString('base64')
+          }
         }
-      }
-    ]
-  });
+      ]
+    }),
+    120_000, 'generateContent'
+  );
 
   const text = response.text || '';
   if (!text) throw new Error('Gemini returned empty response');

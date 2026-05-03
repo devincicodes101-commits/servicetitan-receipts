@@ -1056,8 +1056,21 @@ function setQueuePillStatus(localId, text) {
 }
 
 function pollIncomingStatus(incomingId, localId) {
+  const deadline = Date.now() + 4 * 60 * 1000; // 4-minute hard timeout
   const iv = setInterval(async () => {
     try {
+      if (Date.now() > deadline) {
+        clearInterval(iv);
+        const r = receipts.find(x => x.id === localId);
+        if (r) {
+          r.extracting  = false;
+          r.uploadError = 'Extraction timed out — please delete and re-upload this file';
+          setQueuePillStatus(localId, 'Failed');
+          renderReviewList();
+        }
+        return;
+      }
+
       const res  = await fetch(`/api/incoming-status/${incomingId}`);
       const json = await res.json();
       const r    = receipts.find(x => x.id === localId);
