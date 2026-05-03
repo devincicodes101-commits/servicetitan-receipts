@@ -1299,13 +1299,32 @@ IMPORTANT: vendorName must be the company that ISSUED this invoice (the seller/s
   return text;
 }
 
+async function parseWithGeminiRetry(fileBuffer, mimeType, model, maxRetries = 3) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await parseWithGemini(fileBuffer, mimeType, model);
+    } catch (err) {
+      if (/503|UNAVAILABLE|high demand|quota/i.test(err.message)) {
+        lastErr = err;
+        const delay = attempt * 10_000;
+        console.warn(`[gemini] ${model} 503 on attempt ${attempt}/${maxRetries}, retrying in ${delay / 1000}s...`);
+        await new Promise(r => setTimeout(r, delay));
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw lastErr;
+}
+
 async function parseWithGeminiFallback(fileBuffer, mimeType) {
   try {
-    return await parseWithGemini(fileBuffer, mimeType, GEMINI_MODEL);
+    return await parseWithGeminiRetry(fileBuffer, mimeType, GEMINI_MODEL);
   } catch (err) {
     if (/503|UNAVAILABLE|high demand|quota/i.test(err.message)) {
-      console.warn(`[gemini] ${GEMINI_MODEL} unavailable, falling back to ${GEMINI_FALLBACK_MODEL}`);
-      return await parseWithGemini(fileBuffer, mimeType, GEMINI_FALLBACK_MODEL);
+      console.warn(`[gemini] ${GEMINI_MODEL} exhausted retries, falling back to ${GEMINI_FALLBACK_MODEL}`);
+      return await parseWithGeminiRetry(fileBuffer, mimeType, GEMINI_FALLBACK_MODEL);
     }
     throw err;
   }
