@@ -1099,10 +1099,8 @@ function pollIncomingStatus(incomingId, localId) {
         }));
         if (d.receiptBlobUrl) r.fileURL = d.receiptBlobUrl;
         if (d.receiptId) r.dbId = d.receiptId;
-        setQueuePillStatus(localId, 'Extracted ✓');
         renderReviewList();
-        // Auto-navigate to Review and open the receipt
-        showView('review');
+        navigate('review');
         selectedId = localId;
         renderReviewList();
         showPreview(r, 'review');
