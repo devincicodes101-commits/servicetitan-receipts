@@ -708,6 +708,7 @@ function extractFieldsFromLlama(content) {
   let vendor = null, invoiceNo = null, date = null, jobNo = null, total = null;
   let poNumber = null, requiredDate = null, vendorInvoiceNo = null;
   const items = [];
+  const isYear = (s) => /^20[12]\d$/.test(s);
 
   function parseTables(input) {
     const tbls = [];
@@ -917,20 +918,20 @@ function extractFieldsFromLlama(content) {
     if (!val) continue;
 
     let m = val.match(/^(\d{3,9})$/);
-    if (m) {
+    if (m && !isYear(m[1])) {
       jobNo = m[1];
       break;
     }
 
     // Handle "1095 - RETURN", "1391-CREDIT" etc. with optional spaces around dash
     m = val.match(/^(\d{3,9})\s*[-–]\s*[A-Z]/i);
-    if (m) {
+    if (m && !isYear(m[1])) {
       jobNo = m[1];
       break;
     }
 
     m = val.match(/^(\d{3,9})[-\s]/);
-    if (m) {
+    if (m && !isYear(m[1])) {
       jobNo = m[1];
       break;
     }
@@ -938,12 +939,13 @@ function extractFieldsFromLlama(content) {
 
   // Fallback: scan raw text for P.O. / PO number patterns
   // Handles "PO Number\n1180", "YOUR P.O. NO 1456", "PO Number | 1180" etc.
+  // isYear filter prevents matching dates like "Purchase Order Date: 2026"
   if (!jobNo) {
     const poMatch =
       content.match(/\bP\.?\s*O\.?\s*(?:Number|No|NO|#|NUM|NUMBER)\b[^\d]{0,120}?(\d{3,9})\b/i) ||
       content.match(/\bYour\s+P\.?\s*O\.?\s*(?:No|NO|Number)\b[^\d]{0,120}?(\d{3,9})\b/i) ||
       content.match(/\bPurchase\s*Order\b[^\d]{0,120}?(\d{3,9})(?:-\d+)?\b/i);
-    if (poMatch) jobNo = poMatch[1];
+    if (poMatch && !isYear(poMatch[1])) jobNo = poMatch[1];
   }
 
   // Fallback: scan raw text for NNNN-RETURN / NNNN-CREDIT patterns
@@ -1129,9 +1131,23 @@ function extractFieldsFromLlama(content) {
     if (structured.poNumber)        poNumber     = structured.poNumber;
     if (structured.requiredDate)    requiredDate = parseDate(structured.requiredDate) || requiredDate;
 
+    // Always prefer job number from line items — overrides any regex-derived guess
+    if (Array.isArray(structured.lineItems) && structured.lineItems.length) {
+      const lineJobNos = structured.lineItems
+        .map(li => String(li.jobNo || '').trim())
+        .filter(j => j && !isYear(j));
+      if (lineJobNos.length > 0) {
+        // Pick the most common value across all line items
+        const counts = {};
+        lineJobNos.forEach(j => { counts[j] = (counts[j] || 0) + 1; });
+        const best = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
+        if (best) jobNo = best;
+      }
+    }
     if (!jobNo && Array.isArray(structured.lineItems)) {
       for (const li of structured.lineItems) {
-        if (li.jobNo) { jobNo = String(li.jobNo); break; }
+        const j = String(li.jobNo || '').trim();
+        if (j && !isYear(j)) { jobNo = j; break; }
       }
     }
 
