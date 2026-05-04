@@ -2482,8 +2482,26 @@ app.get('*', (req, res) => {
 
 module.exports = app;
 
+async function cleanupStuckRows() {
+  try {
+    const sb = await getSupabaseAdmin();
+    const cutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // older than 10 min
+    const { data, error } = await sb.from('incoming_receipts')
+      .update({ status: 'failed', error: 'Processing interrupted — server restarted. Please re-upload.' })
+      .in('status', ['pending', 'processing'])
+      .lt('created_at', cutoff)
+      .select('id');
+    if (!error && data?.length) {
+      console.log(`[startup] marked ${data.length} stuck incoming_receipts row(s) as failed`);
+    }
+  } catch (err) {
+    console.error('[startup] cleanupStuckRows error:', err.message);
+  }
+}
+
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`ReceiptFlow server running at http://localhost:${PORT}`);
+    cleanupStuckRows();
   });
 }
