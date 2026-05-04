@@ -742,6 +742,11 @@ function onLogin(user) {
   document.getElementById('topbarAvatar').textContent   = initials;
 
   loadReceiptsFromDB();
+  startBackgroundRefresh();
+}
+
+function startBackgroundRefresh() {
+  setInterval(() => loadReceiptsFromDB(), 10000);
 }
 
 function onLogout() {
