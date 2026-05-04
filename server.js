@@ -673,6 +673,7 @@ app.use(async (req, res, next) => {
     '/api/receipt-status',
     '/api/receipt/',
     '/api/incoming-history',
+    '/api/incoming-pending',
     '/api/test-st'
   ];
 
