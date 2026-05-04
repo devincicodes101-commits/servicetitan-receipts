@@ -18,8 +18,8 @@ const { serve } = require('inngest/express');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const GEMINI_MODEL = 'gemini-2.5-pro';
-const GEMINI_FALLBACK_MODEL = 'gemini-2.0-flash';
+const GEMINI_MODEL = 'gemini-2.0-flash';
+const GEMINI_FALLBACK_MODEL = 'gemini-2.5-pro';
 
 // ── Inngest client ──
 const inngest = new Inngest({ id: 'receiptflow' });
@@ -1266,7 +1266,7 @@ IMPORTANT: vendorName must be the company that ISSUED this invoice (the seller/s
           { fileData: { mimeType, fileUri: uploadedFile.uri } }
         ]
       }),
-      180_000, 'generateContent'
+      120_000, 'generateContent'
     );
 
     const text = response.text || '';
