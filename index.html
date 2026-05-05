@@ -365,6 +365,7 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
 
 /* Tri-view tabs (mobile only) */
 .tri-tabs { display: none; }
+.tri-tabs-inner { display: flex; gap: 4px; flex: 1; background: var(--bg-2); padding: 3px; border-radius: 999px; min-width: 0; }
 
 @media (max-width: 1024px) {
   .view.triview.active { grid-template-columns: 260px 1fr; }
@@ -406,8 +407,11 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
   .feed-cols .feed-c-date, .feed-row .feed-c-date,
   .feed-cols .feed-c-status, .feed-row .feed-c-status { display: none; }
 
-  /* Triview: single column with tab switcher */
-  .view.triview.active { grid-template-columns: 1fr; }
+  /* Triview: switch from grid to flex column for predictable sizing */
+  .view.triview.active { display: flex; flex-direction: column; grid-template-columns: none; }
+  .view.triview.active .tri-list,
+  .view.triview.active .tri-preview,
+  .view.triview.active .tri-details { flex: 1 1 0; min-height: 0; border: none; }
   .view.triview.active .tri-list { display: flex; flex-direction: column; }
   .view.triview.active .tri-preview,
   .view.triview.active .tri-details { display: none; }
@@ -416,14 +420,21 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
   .view.triview.active.show-details .tri-list { display: none; }
   .view.triview.active.show-details .tri-details { display: flex; flex-direction: column; }
 
-  .tri-tabs { display: flex; gap: 6px; padding: 8px 12px; background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
-  .tri-tab { flex: 1; padding: 8px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; text-align: center; }
-  .tri-tab.active { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .tri-tabs { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--card); border-bottom: 1px solid var(--line); height: 56px; flex-shrink: 0; }
+  .tri-tab { flex: 1 1 0; min-width: 0; padding: 8px 6px; background: transparent; border: none; border-radius: 999px; font-family: inherit; font-size: 12px; font-weight: 600; color: var(--ink-soft); cursor: pointer; text-align: center; transition: all .15s; }
+  .tri-tab.active { background: var(--ink); color: var(--bg); }
 
   .detail-grid { grid-template-columns: 1fr; }
   .gmail-stats { grid-template-columns: 1fr 1fr; }
 
   .sidebar-footer { display: none; }
+
+  /* Gmail page mobile */
+  .gmail-page { padding: 14px 14px 24px; gap: 16px; }
+  .gmail-page-head { flex-direction: column; align-items: stretch; gap: 12px; }
+  .gmail-page-title { font-size: 26px; }
+  .gmail-page-btns { width: 100%; }
+  .gmail-page-btns button { flex: 1; justify-content: center; }
 }
 
 @media (max-width: 480px) {
@@ -597,15 +608,17 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
   <!-- VIEW: REVIEW QUEUE -->
   <div class="view triview" id="view-review">
     <div class="tri-tabs">
-      <button class="tri-tab active" onclick="setTriPanel('view-review','list')">List</button>
-      <button class="tri-tab" onclick="setTriPanel('view-review','preview')">Preview</button>
-      <button class="tri-tab" onclick="setTriPanel('view-review','details')">Details</button>
+      <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Open menu">
+        <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+      <div class="tri-tabs-inner">
+        <button class="tri-tab active" onclick="setTriPanel('view-review','list')">List</button>
+        <button class="tri-tab" onclick="setTriPanel('view-review','preview')">Preview</button>
+        <button class="tri-tab" onclick="setTriPanel('view-review','details')">Details</button>
+      </div>
     </div>
     <div class="tri-list">
       <div class="tri-list-head">
-        <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Open menu" style="margin-bottom:10px">
-          <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-        </button>
         <div class="tri-list-title">Review <em>Queue</em></div>
         <div class="tri-list-count" id="reviewCount">0 items</div>
       </div>
@@ -665,15 +678,17 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
   <!-- VIEW: HISTORY -->
   <div class="view triview" id="view-history">
     <div class="tri-tabs">
-      <button class="tri-tab active" onclick="setTriPanel('view-history','list')">List</button>
-      <button class="tri-tab" onclick="setTriPanel('view-history','preview')">Preview</button>
-      <button class="tri-tab" onclick="setTriPanel('view-history','details')">Details</button>
+      <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Open menu">
+        <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+      <div class="tri-tabs-inner">
+        <button class="tri-tab active" onclick="setTriPanel('view-history','list')">List</button>
+        <button class="tri-tab" onclick="setTriPanel('view-history','preview')">Preview</button>
+        <button class="tri-tab" onclick="setTriPanel('view-history','details')">Details</button>
+      </div>
     </div>
     <div class="tri-list">
       <div class="tri-list-head">
-        <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Open menu" style="margin-bottom:10px">
-          <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-        </button>
         <div class="tri-list-title">Processing <em>History</em></div>
         <div class="tri-list-count" id="historyCount">0 receipts</div>
       </div>
@@ -736,9 +751,14 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
   <div class="view" id="view-gmail" style="padding:0">
     <div class="gmail-page">
       <div class="gmail-page-head">
-        <div>
-          <div class="gmail-page-title">Gmail <em>Receipts</em></div>
-          <div class="gmail-page-sub">Receipts emailed in via n8n — processed automatically</div>
+        <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0">
+          <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Open menu">
+            <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          </button>
+          <div>
+            <div class="gmail-page-title">Gmail <em>Receipts</em></div>
+            <div class="gmail-page-sub">Receipts emailed in via n8n — processed automatically</div>
+          </div>
         </div>
         <div class="gmail-page-btns">
           <button class="btn-ghost" onclick="loadGmailView()">
@@ -792,6 +812,9 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
 
   <!-- VIEW: SETTINGS placeholder -->
   <div class="view" id="view-settings">
+    <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Open menu" style="margin-bottom:8px">
+      <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
     <div class="empty-state" style="margin-top:80px">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       <p style="font-size:16px;font-family:'Fraunces',serif">Settings coming soon</p>
