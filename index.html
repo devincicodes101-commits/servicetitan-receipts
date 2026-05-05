@@ -356,6 +356,80 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
 .stat-card:nth-child(3) { animation-delay: .15s; }
 @keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ============ RESPONSIVE / MOBILE ============ */
+.menu-toggle { display: none; width: 38px; height: 38px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; place-items: center; cursor: pointer; flex-shrink: 0; }
+.menu-toggle svg { width: 20px; height: 20px; stroke: var(--ink); stroke-width: 2; fill: none; }
+.sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(26,25,21,.4); z-index: 99; }
+.sidebar-overlay.active { display: block; }
+
+/* Tri-view tabs (mobile only) */
+.tri-tabs { display: none; }
+
+@media (max-width: 1024px) {
+  .view.triview.active { grid-template-columns: 260px 1fr; }
+  .view.triview.active .tri-details { display: none; }
+  .view.triview.active.show-details .tri-list { display: none; }
+  .view.triview.active.show-details .tri-preview { display: none; }
+  .view.triview.active.show-details .tri-details { display: flex; flex-direction: column; }
+  .view.triview.active.show-details { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 768px) {
+  .app { grid-template-columns: 1fr; }
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0; width: 260px;
+    z-index: 100; transform: translateX(-100%); transition: transform .25s ease;
+    box-shadow: 0 0 32px rgba(0,0,0,.15);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .menu-toggle { display: grid; }
+
+  .view.active { padding: 12px; gap: 12px; }
+  .topbar { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .topbar-actions { width: 100%; flex-wrap: wrap; }
+  .search-bar { flex: 1; min-width: 0; width: auto; }
+  .page-title { font-size: 28px; }
+
+  .stats { grid-template-columns: 1fr; }
+  .stat-card { min-height: 110px; }
+  .stat-value { font-size: 36px; }
+
+  .drop-zone { padding: 32px 20px; min-height: 240px; }
+  .drop-icon { width: 70px; height: 70px; margin-bottom: 14px; }
+  .drop-icon svg { width: 36px; height: 36px; }
+  .drop-title { font-size: 24px; }
+  .drop-actions { flex-direction: column; width: 100%; }
+  .drop-actions > * { width: 100%; }
+
+  .feed-cols, .feed-row { grid-template-columns: 36px 1fr 70px; }
+  .feed-cols .feed-c-date, .feed-row .feed-c-date,
+  .feed-cols .feed-c-status, .feed-row .feed-c-status { display: none; }
+
+  /* Triview: single column with tab switcher */
+  .view.triview.active { grid-template-columns: 1fr; }
+  .view.triview.active .tri-list { display: flex; flex-direction: column; }
+  .view.triview.active .tri-preview,
+  .view.triview.active .tri-details { display: none; }
+  .view.triview.active.show-preview .tri-list { display: none; }
+  .view.triview.active.show-preview .tri-preview { display: flex; flex-direction: column; }
+  .view.triview.active.show-details .tri-list { display: none; }
+  .view.triview.active.show-details .tri-details { display: flex; flex-direction: column; }
+
+  .tri-tabs { display: flex; gap: 6px; padding: 8px 12px; background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  .tri-tab { flex: 1; padding: 8px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; text-align: center; }
+  .tri-tab.active { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+
+  .detail-grid { grid-template-columns: 1fr; }
+  .gmail-stats { grid-template-columns: 1fr 1fr; }
+
+  .sidebar-footer { display: none; }
+}
+
+@media (max-width: 480px) {
+  .page-title { font-size: 24px; }
+  .gmail-stats { grid-template-columns: 1fr; }
+}
 </style>
 </head>
 <body>
@@ -383,8 +457,10 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
 
 <div class="app" id="app" style="display:none">
 
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar(false)"></div>
+
 <!-- ============ SIDEBAR ============ -->
-<aside class="sidebar">
+<aside class="sidebar" id="sidebar">
   <div class="user-profile">
     <div class="user-avatar-mark" id="sidebarAvatar">—</div>
     <div class="user-profile-info">
@@ -438,9 +514,14 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
   <!-- VIEW: DASHBOARD -->
   <div class="view active" id="view-dashboard">
     <div class="topbar">
-      <div>
-        <div class="page-title">Receipts <em>→ ST.</em></div>
-        <div class="page-sub">Upload a receipt — we extract, match, and push it straight to ServiceTitan.</div>
+      <div style="display:flex;align-items:center;gap:10px;flex:1">
+        <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Open menu">
+          <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <div>
+          <div class="page-title">Receipts <em>→ ST.</em></div>
+          <div class="page-sub">Upload a receipt — we extract, match, and push it straight to ServiceTitan.</div>
+        </div>
       </div>
       <div class="topbar-actions">
         <div class="search-bar">
@@ -515,8 +596,16 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
 
   <!-- VIEW: REVIEW QUEUE -->
   <div class="view triview" id="view-review">
+    <div class="tri-tabs">
+      <button class="tri-tab active" onclick="setTriPanel('view-review','list')">List</button>
+      <button class="tri-tab" onclick="setTriPanel('view-review','preview')">Preview</button>
+      <button class="tri-tab" onclick="setTriPanel('view-review','details')">Details</button>
+    </div>
     <div class="tri-list">
       <div class="tri-list-head">
+        <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Open menu" style="margin-bottom:10px">
+          <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
         <div class="tri-list-title">Review <em>Queue</em></div>
         <div class="tri-list-count" id="reviewCount">0 items</div>
       </div>
@@ -575,8 +664,16 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
 
   <!-- VIEW: HISTORY -->
   <div class="view triview" id="view-history">
+    <div class="tri-tabs">
+      <button class="tri-tab active" onclick="setTriPanel('view-history','list')">List</button>
+      <button class="tri-tab" onclick="setTriPanel('view-history','preview')">Preview</button>
+      <button class="tri-tab" onclick="setTriPanel('view-history','details')">Details</button>
+    </div>
     <div class="tri-list">
       <div class="tri-list-head">
+        <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Open menu" style="margin-bottom:10px">
+          <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
         <div class="tri-list-title">Processing <em>History</em></div>
         <div class="tri-list-count" id="historyCount">0 receipts</div>
       </div>
@@ -819,6 +916,38 @@ function navigate(viewId) {
   if (viewId === 'review')  renderReviewList();
   if (viewId === 'history') renderHistoryList();
   if (viewId === 'gmail')   loadGmailView();
+
+  // Reset triview to list panel and close sidebar on navigation
+  resetTriPanel();
+  toggleSidebar(false);
+}
+
+function toggleSidebar(force) {
+  const sb = document.getElementById('sidebar');
+  const ov = document.getElementById('sidebarOverlay');
+  if (!sb) return;
+  const open = force === undefined ? !sb.classList.contains('open') : !!force;
+  sb.classList.toggle('open', open);
+  ov.classList.toggle('active', open);
+}
+
+function setTriPanel(viewId, panel) {
+  const view = document.getElementById(viewId);
+  if (!view) return;
+  view.classList.remove('show-preview', 'show-details');
+  if (panel === 'preview') view.classList.add('show-preview');
+  if (panel === 'details') view.classList.add('show-details');
+  view.querySelectorAll('.tri-tab').forEach((t, i) => {
+    const want = ['list','preview','details'][i];
+    t.classList.toggle('active', want === panel);
+  });
+}
+
+function resetTriPanel() {
+  document.querySelectorAll('.view.triview').forEach(v => {
+    v.classList.remove('show-preview', 'show-details');
+    v.querySelectorAll('.tri-tab').forEach((t, i) => t.classList.toggle('active', i === 0));
+  });
 }
 
 document.querySelectorAll('.nav-item[data-view]').forEach(item => {
@@ -1354,6 +1483,11 @@ function selectReceipt(id, panel) {
     renderHistoryList();
     showPreview(r, 'history');
     showHistoryDetails(r);
+  }
+
+  // On mobile, switch to the details panel when an item is selected
+  if (window.matchMedia('(max-width: 768px)').matches) {
+    setTriPanel(panel === 'review' ? 'view-review' : 'view-history', 'details');
   }
 }
 
