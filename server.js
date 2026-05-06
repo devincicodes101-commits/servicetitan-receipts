@@ -96,6 +96,34 @@ const extractNodes = (jobsObj) => {
   return [];
 };
 
+// Validate that the extracted fields look like a real invoice/receipt.
+// Filters out junk emails / random PDFs forwarded to the Gmail inbox,
+// and bad scans where Gemini couldn't read meaningful content.
+// Returns null if valid, otherwise a human-readable error string.
+function validateReceiptFields(fields) {
+  const reasons = [];
+
+  const hasVendor = !!(fields.vendor && String(fields.vendor).trim().length >= 2);
+  if (!hasVendor) reasons.push('vendor name');
+
+  const totalNum = parseFloat(fields.total);
+  const hasTotal = Number.isFinite(totalNum) && totalNum > 0;
+  const hasItems = Array.isArray(fields.items) && fields.items.some(
+    it => parseFloat(it.total) > 0 || parseFloat(it.unit) > 0
+  );
+  if (!hasTotal && !hasItems) reasons.push('total amount or line items');
+
+  const hasIdentifier = !!(
+    (fields.poNumber       && String(fields.poNumber).trim()) ||
+    (fields.invoiceNo      && String(fields.invoiceNo).trim()) ||
+    (fields.vendorInvoiceNo && String(fields.vendorInvoiceNo).trim())
+  );
+  if (!hasIdentifier) reasons.push('PO / invoice number');
+
+  if (reasons.length === 0) return null;
+  return `Document does not appear to be a valid invoice or receipt — missing ${reasons.join(', ')}.`;
+}
+
 async function processRowCore(sb, incoming, fileBuffer, mimeType) {
   const rowId = incoming.id;
   const markFailed = async (errorMsg) => {
@@ -367,6 +395,13 @@ async function processIncomingForST(sb, incoming) {
     const fields = extractFieldsFromLlama(geminiOutput);
     console.log(`[process-st] ${rowId}: fields=`, JSON.stringify(fields));
 
+    const validationError = validateReceiptFields(fields);
+    if (validationError) {
+      console.warn(`[process-st] ${rowId}: rejected — ${validationError}`);
+      await markFailed(validationError);
+      return;
+    }
+
     // File is already in Supabase Storage — use its public URL directly
     const receiptBlobUrl = incoming.file_url;
 
@@ -443,6 +478,12 @@ async function processOneQueueRow(sb, row) {
     const geminiOutput = await parseWithGeminiFallback(fileBuffer, mimeType);
     const fields = extractFieldsFromLlama(geminiOutput);
     console.log(`[process-queue] ${rowId}: fields=`, JSON.stringify(fields));
+
+    const validationError = validateReceiptFields(fields);
+    if (validationError) {
+      console.warn(`[process-queue] ${rowId}: rejected as junk — ${validationError}`);
+      return markFailed(validationError);
+    }
 
     const now = new Date().toISOString();
     await sb.from('upload_queue').update({
