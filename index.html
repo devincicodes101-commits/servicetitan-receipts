@@ -1693,6 +1693,7 @@ async function postToST(id) {
         tax:             r.tax,
         shipping:        r.shipping,
         jobId:           r.jobId,
+        total:           r.amount,
         lineItems:       r.lineItems
       })
     });
@@ -1702,7 +1703,7 @@ async function postToST(id) {
       if (res.status === 503) {
         alert('ServiceTitan credentials not configured. Add ST_* vars to .env on VPS.');
       } else {
-        alert('ServiceTitan error: ' + (json.error || 'Unknown error'));
+        alert(json.error || 'Unknown error');
       }
       postBtn.textContent = 'Post to ServiceTitan';
       postBtn.disabled = false;
@@ -1878,11 +1879,12 @@ async function postToSTFromHistory(id) {
         tax:             r.tax,
         shipping:        r.shipping,
         jobId:           r.jobId,
+        total:           r.amount,
         lineItems:       r.lineItems
       })
     });
     const json = await res.json();
-    if (!res.ok) { alert('ST error: ' + (json.error || 'Unknown')); if (btn) { btn.textContent = 'Post to ServiceTitan'; btn.disabled = false; } return; }
+    if (!res.ok) { alert(json.error || 'Unknown error'); if (btn) { btn.textContent = 'Post to ServiceTitan'; btn.disabled = false; } return; }
     r.status = 'pushed';
     r.stPurchaseOrderId = json.poId ? String(json.poId) : null;
     if (r.dbId) {

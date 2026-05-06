@@ -124,6 +124,21 @@ function validateReceiptFields(fields) {
   return `Document does not appear to be a valid invoice or receipt — missing ${reasons.join(', ')}.`;
 }
 
+// Stricter check at ServiceTitan-post time: refuses to push to ST when essential
+// linking info is missing. Job number must be on the document (not derived).
+function validateForServiceTitan({ vendor, jobId, lineItems, total }) {
+  const missing = [];
+  if (!vendor || !String(vendor).trim()) missing.push('vendor');
+  if (!jobId  || !String(jobId).trim())  missing.push('job number');
+  const hasItems = Array.isArray(lineItems) && lineItems.some(
+    it => parseFloat(it.total) > 0 || parseFloat(it.unit) > 0 || parseFloat(it.cost) > 0
+  );
+  const hasTotal = parseFloat(total) > 0;
+  if (!hasItems && !hasTotal) missing.push('line items / total');
+  if (missing.length === 0) return null;
+  return `Cannot post to ServiceTitan — missing ${missing.join(', ')}.`;
+}
+
 async function processRowCore(sb, incoming, fileBuffer, mimeType) {
   const rowId = incoming.id;
   const markFailed = async (errorMsg) => {
@@ -528,6 +543,16 @@ async function processOneQueueRow(sb, row) {
     // Auto-post to ServiceTitan as a Purchase Order
     let stPoId = null;
     try {
+      const stBlocker = validateForServiceTitan({
+        vendor:    fields.vendor,
+        jobId:     fields.jobNo,
+        lineItems: fields.items,
+        total:     fields.total
+      });
+      if (stBlocker) {
+        console.warn(`[process-queue] ${rowId}: skipping ST post — ${stBlocker}`);
+        throw new Error(stBlocker);
+      }
       const stResult = await createSTPurchaseOrder({
         poNumber:        fields.poNumber         || null,
         vendor:          fields.vendor           || null,
@@ -978,16 +1003,9 @@ function extractFieldsFromLlama(content) {
     }
   }
 
-  // Fallback: scan raw text for P.O. / PO number patterns
-  // Handles "PO Number\n1180", "YOUR P.O. NO 1456", "PO Number | 1180" etc.
-  // isYear filter prevents matching dates like "Purchase Order Date: 2026"
-  if (!jobNo) {
-    const poMatch =
-      content.match(/\bP\.?\s*O\.?\s*(?:Number|No|NO|#|NUM|NUMBER)\b[^\d]{0,120}?(\d{3,9})\b/i) ||
-      content.match(/\bYour\s+P\.?\s*O\.?\s*(?:No|NO|Number)\b[^\d]{0,120}?(\d{3,9})\b/i) ||
-      content.match(/\bPurchase\s*Order\b[^\d]{0,120}?(\d{3,9})(?:-\d+)?\b/i);
-    if (poMatch && !isYear(poMatch[1])) jobNo = poMatch[1];
-  }
+  // NOTE: previously had a fallback that pulled jobNo from "Purchase Order #<num>"
+  // patterns. Removed — the PO number is NOT a job number. jobNo must come from
+  // an explicit "Job #" / "Job No" label or line-items column. If missing, leave empty.
 
   // Fallback: scan raw text for NNNN-RETURN / NNNN-CREDIT patterns
   if (!jobNo) {
@@ -2209,7 +2227,11 @@ app.post('/api/create-po', async (req, res) => {
     const creds = getSTCreds();
     if (!creds) return res.status(503).json({ error: 'ServiceTitan credentials not configured' });
 
-    const { poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems } = req.body || {};
+    const { poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems, total } = req.body || {};
+
+    const blocker = validateForServiceTitan({ vendor, jobId, lineItems, total });
+    if (blocker) return res.status(400).json({ error: blocker });
+
     const result = await createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems });
     return res.json({ success: true, ...result });
   } catch (err) {
