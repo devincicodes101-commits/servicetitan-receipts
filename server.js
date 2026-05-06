@@ -1874,6 +1874,30 @@ async function getSTLookups(token, creds) {
     return null;
   }
 
+  // Search all location-type endpoints for a name match (case-insensitive, exact then contains)
+  async function findLocationByName(name) {
+    if (!name) return null;
+    const targetLower = name.toLowerCase().trim();
+    const endpoints = [
+      `${base}/inventory/v2/tenant/${tid}/inventory-locations?active=true&pageSize=200`,
+      `${base}/inventory/v2/tenant/${tid}/trucks?active=true&pageSize=200`,
+      `${base}/inventory/v2/tenant/${tid}/locations?active=true&pageSize=200`
+    ];
+    for (const url of endpoints) {
+      try {
+        const r = await fetch(url, { headers: h });
+        if (!r.ok) continue;
+        const d = await r.json();
+        const items = d.data || d.items || [];
+        const exact = items.find(it => (it.name || '').toLowerCase().trim() === targetLower);
+        if (exact?.id) return exact.id;
+        const partial = items.find(it => (it.name || '').toLowerCase().includes(targetLower));
+        if (partial?.id) return partial.id;
+      } catch { /* try next */ }
+    }
+    return null;
+  }
+
   const typeId = parseInt(process.env.ST_TYPE_ID || '') ||
     await firstId(`${base}/inventory/v2/tenant/${tid}/purchase-order-types?active=true&pageSize=1`);
 
@@ -1885,14 +1909,27 @@ async function getSTLookups(token, creds) {
       `${base}/tenant/v2/tenant/${tid}/business-units?active=true&pageSize=1`
     );
 
-  const locationId = parseInt(process.env.ST_LOCATION_ID || '') ||
-    await firstId(
-      `${base}/inventory/v2/tenant/${tid}/trucks?active=true&pageSize=1`,
+  // Location resolution priority:
+  //   1. ST_LOCATION_ID env var (explicit override)
+  //   2. ST_LOCATION_NAME env var match (default "Default Warehouse")
+  //   3. First available location from any endpoint
+  const locationName = (process.env.ST_LOCATION_NAME || 'Default Warehouse').trim();
+  let locationId = parseInt(process.env.ST_LOCATION_ID || '') || null;
+  let locationSource = 'env-id';
+  if (!locationId && locationName) {
+    locationId = await findLocationByName(locationName);
+    if (locationId) locationSource = `name="${locationName}"`;
+  }
+  if (!locationId) {
+    locationId = await firstId(
       `${base}/inventory/v2/tenant/${tid}/inventory-locations?active=true&pageSize=1`,
+      `${base}/inventory/v2/tenant/${tid}/trucks?active=true&pageSize=1`,
       `${base}/inventory/v2/tenant/${tid}/locations?active=true&pageSize=1`
     );
+    if (locationId) locationSource = 'first-available';
+  }
 
-  console.log(`[st-lookups] typeId=${typeId} buId=${businessUnitId} locationId=${locationId}`);
+  console.log(`[st-lookups] typeId=${typeId} buId=${businessUnitId} locationId=${locationId} (${locationSource})`);
   return { typeId, businessUnitId, locationId };
 }
 
