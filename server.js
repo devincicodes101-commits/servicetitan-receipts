@@ -1282,17 +1282,17 @@ function extractFieldsFromLlama(content) {
     if (m && !isYear(m[1])) jobNo = m[1];
   }
 
-  // ── Master-style: use "Total" (pre-tax subtotal) as the receipt total ──
+  // ── Master-style: total = sum of line item totals (pre-tax subtotal) ──
   // Master invoices print both:    Total = 7962.41 (pre-tax subtotal)
   //                                Invoice Total = 8442.36 (with tax)
-  // ServiceTitan computes the post-tax PO total itself from items + tax + shipping,
-  // so we store the pre-tax subtotal to avoid double-counting tax.
-  if (isMasterStyle) {
-    const rawTotal = lmap['TOTAL'];
-    if (rawTotal) {
-      const n = parseFloat(String(rawTotal).replace(/[$,]/g, '').replace(/\s*[-+]\s*$/, ''));
-      if (!isNaN(n) && n > 0) total = n;
-    }
+  // We can't reliably use lmap['TOTAL'] because the line items table
+  // ALSO has a "TOTAL" column header — the label parser ends up pairing it
+  // with the first line item's amount instead of the bottom subtotal.
+  // Summing the line items directly gives the correct pre-tax subtotal.
+  // ServiceTitan computes the post-tax PO total itself from items + tax + shipping.
+  if (isMasterStyle && Array.isArray(items) && items.length > 0) {
+    const sum = items.reduce((s, li) => s + (parseFloat(li.total) || 0), 0);
+    if (sum > 0) total = Math.round(sum * 100) / 100;
   }
 
   // ── Master-style: default requiredDate to invoice date when not printed ──
