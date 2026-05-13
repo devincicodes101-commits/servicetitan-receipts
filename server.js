@@ -960,9 +960,10 @@ function extractFieldsFromLlama(content) {
     (boldMatch?.[1]?.trim() && !DOC_KEYWORDS.test(boldMatch[1]) ? boldMatch[1].trim() : null) ||
     null;
 
-  // Normalized lookup helper — strips dots, slashes, extra spaces from label keys
-  // so "G.S.T./H.S.T." matches "GST HST", and "INVOICE NO." matches "INVOICE NO".
-  const normLabel = s => String(s || '').toUpperCase().replace(/[.\/&]/g, ' ').replace(/\s+/g, ' ').trim();
+  // Normalized lookup helper — strips dots entirely (so "P.S.T." → "PST"),
+  // converts slashes / ampersands to spaces (so "G.S.T./H.S.T." → "GST HST"),
+  // and collapses extra whitespace.
+  const normLabel = s => String(s || '').toUpperCase().replace(/\./g, '').replace(/[\/&]/g, ' ').replace(/\s+/g, ' ').trim();
   const lmapNorm = {};
   for (const [k, v] of Object.entries(lmap)) lmapNorm[normLabel(k)] = v;
   const getL = (...keys) => {
@@ -2205,8 +2206,18 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
   };
 
   // ── Line items — with per-item ST SKU lookup ──
-  const rawItems = (lineItems && lineItems.length > 0)
-    ? lineItems
+  // Drop placeholder rows that weren't shipped (qty 0 AND no line total) so
+  // ST doesn't charge them at unit price. Invoice line totals already exclude
+  // these, so the PO total stays consistent with the invoice.
+  const shippedItems = (lineItems || []).filter(li => {
+    const q = parseFloat(li.qty);
+    const t = parseFloat(li.total);
+    const u = parseFloat(li.unit) || parseFloat(li.cost);
+    return (q > 0) || (t > 0) || ((q === 0 || !q) && u > 0 && t > 0);
+  });
+
+  const rawItems = (shippedItems.length > 0)
+    ? shippedItems
     : [{ desc: vendorInvoiceNo || vendor || 'Receipt', qty: 1, unit: '0.00', vendorPartNo: '' }];
 
   const defaultSkuId = parseInt(process.env.ST_DEFAULT_SKU_ID || '0') || 0;
