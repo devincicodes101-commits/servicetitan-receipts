@@ -1218,6 +1218,10 @@ function extractFieldsFromLlama(content) {
     }
   }
 
+  // Gemini-supplied tax/shipping — these are the source of truth when present,
+  // since the regex/label fallbacks are easy to fool by document formatting.
+  let geminiTax = null, geminiShipping = null;
+
   if (structured) {
     if (structured.vendorName)      vendor       = structured.vendorName      || vendor;
     if (structured.vendorInvoiceNo) { invoiceNo   = structured.vendorInvoiceNo; vendorInvoiceNo = structured.vendorInvoiceNo; }
@@ -1225,6 +1229,8 @@ function extractFieldsFromLlama(content) {
     if (structured.totalAmount)     total        = structured.totalAmount;
     if (structured.poNumber)        poNumber     = structured.poNumber;
     if (structured.requiredDate)    requiredDate = parseDate(structured.requiredDate) || requiredDate;
+    if (typeof structured.taxAmount === 'number' && structured.taxAmount > 0)      geminiTax = structured.taxAmount;
+    if (typeof structured.shippingAmount === 'number' && structured.shippingAmount > 0) geminiShipping = structured.shippingAmount;
 
     // Always prefer job number from line items — overrides any regex-derived guess
     if (Array.isArray(structured.lineItems) && structured.lineItems.length) {
@@ -1331,24 +1337,28 @@ function extractFieldsFromLlama(content) {
     }
   }
 
-  // Extract tax amount — sum all tax-type lines (Canadian invoices often print GST + PST separately)
-  let tax = null;
+  // Extract tax amount — prefer Gemini's computed sum, otherwise fall back
+  // to label/regex parsing.
+  let tax = geminiTax;
   const TAX_LABELS = [
     'TOTAL TAX', 'TAX AMOUNT', 'SALES TAX', 'TAX',
     'GST', 'HST', 'PST', 'QST', 'VAT',
     'GST HST', 'GST/HST', 'G.S.T./H.S.T.', 'G.S.T. H.S.T.',
     'G.S.T.', 'H.S.T.', 'P.S.T.', 'Q.S.T.'
   ];
-  const seenTaxVals = new Set();
-  for (const lbl of TAX_LABELS) {
-    const rawTax = getL(lbl);
-    if (rawTax) {
-      const n = parseFloat(String(rawTax).replace(/[$,]/g, ''));
-      if (!isNaN(n) && n >= 0 && !seenTaxVals.has(n)) {
-        seenTaxVals.add(n);
-        tax = (tax || 0) + n;
-        // Stop early if we hit a labelled "TOTAL TAX" / "TAX AMOUNT" / "SALES TAX" — those are pre-summed
-        if (/TOTAL TAX|TAX AMOUNT|SALES TAX/i.test(lbl)) break;
+  // Only run the label-based sum if Gemini didn't already give us a tax value
+  if (tax === null) {
+    const seenTaxVals = new Set();
+    for (const lbl of TAX_LABELS) {
+      const rawTax = getL(lbl);
+      if (rawTax) {
+        const n = parseFloat(String(rawTax).replace(/[$,]/g, ''));
+        if (!isNaN(n) && n >= 0 && !seenTaxVals.has(n)) {
+          seenTaxVals.add(n);
+          tax = (tax || 0) + n;
+          // Stop early if we hit a labelled "TOTAL TAX" / "TAX AMOUNT" / "SALES TAX" — those are pre-summed
+          if (/TOTAL TAX|TAX AMOUNT|SALES TAX/i.test(lbl)) break;
+        }
       }
     }
   }
@@ -1383,13 +1393,15 @@ function extractFieldsFromLlama(content) {
     if (plainTax > 0) tax = plainTax;
   }
 
-  // Extract shipping/freight amount
-  let shipping = null;
-  for (const lbl of ['SHIPPING', 'FREIGHT', 'DELIVERY', 'SHIPPING & HANDLING', 'S&H', 'SHIPPING CHARGE', 'FREIGHT CHARGE']) {
-    const rawShip = getL(lbl);
-    if (rawShip) {
-      const n = parseFloat(String(rawShip).replace(/[$,]/g, ''));
-      if (!isNaN(n) && n >= 0) { shipping = n; break; }
+  // Extract shipping/freight amount — prefer Gemini's value, otherwise label-based
+  let shipping = geminiShipping;
+  if (shipping === null) {
+    for (const lbl of ['SHIPPING', 'FREIGHT', 'DELIVERY', 'SHIPPING & HANDLING', 'S&H', 'SHIPPING CHARGE', 'FREIGHT CHARGE']) {
+      const rawShip = getL(lbl);
+      if (rawShip) {
+        const n = parseFloat(String(rawShip).replace(/[$,]/g, ''));
+        if (!isNaN(n) && n >= 0) { shipping = n; break; }
+      }
     }
   }
 
@@ -1464,9 +1476,11 @@ TRAILING MINUS / CREDIT NOTATION (STRICT):
 - If the document is labelled "CREDIT", "RETURN", or "CREDIT - DO NOT PAY", verify all totals have trailing minus signs and output them as negative.
 
 After all document content above, write a line containing only ---JSON--- then a single JSON object (no markdown fences, no extra text):
-{"poNumber":"","poDate":"","requiredDate":"","vendorName":"","vendorInvoiceNo":"","totalAmount":0,"lineItems":[{"vendorPartNo":"","stPartNo":"","description":"","jobNo":"","cost":0,"quantity":1,"total":0}]}
+{"poNumber":"","poDate":"","requiredDate":"","vendorName":"","vendorInvoiceNo":"","totalAmount":0,"taxAmount":0,"shippingAmount":0,"lineItems":[{"vendorPartNo":"","stPartNo":"","description":"","jobNo":"","cost":0,"quantity":1,"total":0}]}
 Fill every field from the document. Use empty string for missing text, 0 for missing numbers, YYYY-MM-DD for dates. For lineItems, include one entry per product/material row.
-IMPORTANT: vendorName must be the company that ISSUED this invoice (the seller/supplier). Never use the customer name, bill-to name, or any watermark/logo company name that represents the recipient of the invoice.`;
+IMPORTANT: vendorName must be the company that ISSUED this invoice (the seller/supplier). Never use the customer name, bill-to name, or any watermark/logo company name that represents the recipient of the invoice.
+IMPORTANT: taxAmount must be the SUM of every tax line on the document — GST, HST, PST, QST, VAT, sales tax, etc. For example, if the invoice prints "G.S.T./H.S.T. 398.12" AND "P.S.T. 81.83" as separate lines, taxAmount = 479.95 (the sum). If a single "Total Tax" or "Sales Tax" line is printed, use that. If no tax is shown, use 0.
+IMPORTANT: shippingAmount is shipping/freight/delivery charges only. 0 if none.`;
 
   const withTimeout = (promise, ms, label) => {
     const timer = new Promise((_, reject) =>
