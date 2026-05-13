@@ -1262,32 +1262,62 @@ function extractFieldsFromLlama(content) {
     }
   }
 
-  // ── Master-style fallback: derive jobNo from customer's order reference ──
-  // On supplier invoices (Master, Gescan, etc.), labels like "YOUR ORDER 67630170-001"
-  // or "CUSTOMER PO" represent the customer's job/PO reference. Strip any "-NNN" suffix
-  // and use the prefix as the job number. Only kicks in when an explicit Job # was NOT
-  // already extracted from line items — so Sasquatch-issued POs (no YOUR ORDER field)
-  // and supplier invoices with their own Job # column remain unaffected.
-  if (!jobNo) {
-    const customerOrderRef = getL(
-      'YOUR ORDER', 'YOUR ORDER NO', 'YOUR ORDER NUMBER',
-      'CUSTOMER PO', 'CUSTOMER P.O.', 'CUSTOMER ORDER',
-      'CUSTOMER ORDER NO', 'CUSTOMER ORDER NUMBER'
-    );
-    if (customerOrderRef) {
-      const m = String(customerOrderRef).trim().match(/^(\d{4,})(?:[-\s]+\d+)?$/);
-      if (m && !isYear(m[1])) jobNo = m[1];
+  // ── Master-style detection ──
+  // Supplier invoices that print a customer's order reference ("YOUR ORDER" /
+  // "CUSTOMER PO" / "CUSTOMER ORDER"). These have a different shape from
+  // Sasquatch-issued POs and Gescan-style invoices, so the rules below apply
+  // ONLY to this format. Other PDF types keep all previous behavior.
+  const customerOrderRef = getL(
+    'YOUR ORDER', 'YOUR ORDER NO', 'YOUR ORDER NUMBER',
+    'CUSTOMER PO', 'CUSTOMER P.O.', 'CUSTOMER ORDER',
+    'CUSTOMER ORDER NO', 'CUSTOMER ORDER NUMBER'
+  );
+  const isMasterStyle = !!customerOrderRef;
+
+  // ── Master-style: derive jobNo from customer's order reference ──
+  // "YOUR ORDER 67630170-001" → jobNo = "67630170". Only when no explicit
+  // Job # was already extracted from line items.
+  if (isMasterStyle && !jobNo) {
+    const m = String(customerOrderRef).trim().match(/^(\d{4,})(?:[-\s]+\d+)?$/);
+    if (m && !isYear(m[1])) jobNo = m[1];
+  }
+
+  // ── Master-style: use "Total" (pre-tax subtotal) as the receipt total ──
+  // Master invoices print both:    Total = 7962.41 (pre-tax subtotal)
+  //                                Invoice Total = 8442.36 (with tax)
+  // ServiceTitan computes the post-tax PO total itself from items + tax + shipping,
+  // so we store the pre-tax subtotal to avoid double-counting tax.
+  if (isMasterStyle) {
+    const rawTotal = lmap['TOTAL'];
+    if (rawTotal) {
+      const n = parseFloat(String(rawTotal).replace(/[$,]/g, '').replace(/\s*[-+]\s*$/, ''));
+      if (!isNaN(n) && n > 0) total = n;
     }
   }
 
-  // ── Plain-text total fallback ──
-  // Master-style invoices print totals as right-aligned text rather than in a table:
-  //     Total            7962.41
-  //     G.S.T./H.S.T.     398.12
-  //     P.S.T.             81.83
-  //     Invoice Total    8442.36
-  // If the structured extraction didn't catch the grand total, sniff it from raw text.
-  if (total === null || (itemsSum > 0 && Math.abs(total) < itemsSum * 0.9)) {
+  // ── Master-style: default requiredDate to invoice date when not printed ──
+  if (isMasterStyle && !requiredDate && date) {
+    requiredDate = date;
+  }
+
+  // ── Master-style: recalculate effective unit cost from total / quantity ──
+  // Master line items can have a DISC. % column where:
+  //   PRICE=12551.00, DISC.%=64.00, TOTAL=4518.36 (effective cost per unit after discount)
+  // ST has no per-line discount field, so we use the discounted unit cost.
+  if (isMasterStyle && items.length > 0) {
+    items.forEach(li => {
+      const t = parseFloat(li.total);
+      const q = parseFloat(li.qty);
+      if (Number.isFinite(t) && Number.isFinite(q) && q > 0 && t > 0) {
+        li.unit = Math.round((t / q) * 100) / 100;
+      }
+    });
+  }
+
+  // ── Plain-text total fallback (non-Master only) ──
+  // Sasquatch/Gescan-style PDFs may print totals as right-aligned text outside
+  // tables. Master-style already had its total set above from the "Total" label.
+  if (!isMasterStyle && (total === null || (itemsSum > 0 && Math.abs(total) < itemsSum * 0.9))) {
     const grandMatch =
       content.match(/\bInvoice\s+Total\b[\s$:]*([\d,]+\.\d{2})/i) ||
       content.match(/\bGrand\s+Total\b[\s$:]*([\d,]+\.\d{2})/i) ||
