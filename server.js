@@ -1262,6 +1262,44 @@ function extractFieldsFromLlama(content) {
     }
   }
 
+  // ── Master-style fallback: derive jobNo from customer's order reference ──
+  // On supplier invoices (Master, Gescan, etc.), labels like "YOUR ORDER 67630170-001"
+  // or "CUSTOMER PO" represent the customer's job/PO reference. Strip any "-NNN" suffix
+  // and use the prefix as the job number. Only kicks in when an explicit Job # was NOT
+  // already extracted from line items — so Sasquatch-issued POs (no YOUR ORDER field)
+  // and supplier invoices with their own Job # column remain unaffected.
+  if (!jobNo) {
+    const customerOrderRef = getL(
+      'YOUR ORDER', 'YOUR ORDER NO', 'YOUR ORDER NUMBER',
+      'CUSTOMER PO', 'CUSTOMER P.O.', 'CUSTOMER ORDER',
+      'CUSTOMER ORDER NO', 'CUSTOMER ORDER NUMBER'
+    );
+    if (customerOrderRef) {
+      const m = String(customerOrderRef).trim().match(/^(\d{4,})(?:[-\s]+\d+)?$/);
+      if (m && !isYear(m[1])) jobNo = m[1];
+    }
+  }
+
+  // ── Plain-text total fallback ──
+  // Master-style invoices print totals as right-aligned text rather than in a table:
+  //     Total            7962.41
+  //     G.S.T./H.S.T.     398.12
+  //     P.S.T.             81.83
+  //     Invoice Total    8442.36
+  // If the structured extraction didn't catch the grand total, sniff it from raw text.
+  if (total === null || (itemsSum > 0 && Math.abs(total) < itemsSum * 0.9)) {
+    const grandMatch =
+      content.match(/\bInvoice\s+Total\b[\s$:]*([\d,]+\.\d{2})/i) ||
+      content.match(/\bGrand\s+Total\b[\s$:]*([\d,]+\.\d{2})/i) ||
+      content.match(/\bAmount\s+Due\b[\s$:]*([\d,]+\.\d{2})/i) ||
+      content.match(/\bTotal\s+Due\b[\s$:]*([\d,]+\.\d{2})/i) ||
+      content.match(/\bBalance\s+Due\b[\s$:]*([\d,]+\.\d{2})/i);
+    if (grandMatch) {
+      const n = parseFloat(grandMatch[1].replace(/,/g, ''));
+      if (!isNaN(n) && n > 0 && (total === null || n > total)) total = n;
+    }
+  }
+
   // Extract tax amount — sum all tax-type lines (Canadian invoices often print GST + PST separately)
   let tax = null;
   const TAX_LABELS = [
