@@ -836,11 +836,30 @@ function extractFieldsFromLlama(content) {
     if (!str) return null;
     if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
 
-    let m = str.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-    if (m) return `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
-
-    m = str.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    // YYYY/MM/DD or YYYY-MM-DD
+    let m = str.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
     if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+
+    // DD/MM/YYYY (preferred for Canadian invoices) or MM/DD/YYYY — ambiguous,
+    // pick DMY when first part > 12 (only DMY makes sense), else stay with the original MDY guess.
+    m = str.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (m) {
+      const a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+      if (a > 12) return `${m[3]}-${b.toString().padStart(2,'0')}-${a.toString().padStart(2,'0')}`;
+      return `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+    }
+
+    // 2-digit year: DD/MM/YY (e.g. Master invoices print "11/05/26")
+    m = str.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2})\b/);
+    if (m) {
+      const yy = parseInt(m[3], 10);
+      const yyyy = yy < 70 ? 2000 + yy : 1900 + yy;
+      const a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+      // Assume DMY for 2-digit-year invoices (common in CA/EU formats)
+      if (a > 12) return `${yyyy}-${b.toString().padStart(2,'0')}-${a.toString().padStart(2,'0')}`;
+      if (b > 12) return `${yyyy}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+      return `${yyyy}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+    }
 
     return null;
   }
@@ -941,17 +960,28 @@ function extractFieldsFromLlama(content) {
     (boldMatch?.[1]?.trim() && !DOC_KEYWORDS.test(boldMatch[1]) ? boldMatch[1].trim() : null) ||
     null;
 
-  invoiceNo =
-    lmap['ORDER NO'] ||
-    lmap['INVOICE NO'] ||
-    lmap['INVOICE NUMBER'] ||
-    lmap['INVOICE #'] ||
-    lmap['ORDER NUMBER'] ||
-    lmap['DOCUMENT NO'] ||
-    lmap['RECEIPT NO'] ||
-    lmap['RECEIPT NUMBER'] ||
-    lmap['TRANSACTION NO'] ||
-    null;
+  // Normalized lookup helper — strips dots, slashes, extra spaces from label keys
+  // so "G.S.T./H.S.T." matches "GST HST", and "INVOICE NO." matches "INVOICE NO".
+  const normLabel = s => String(s || '').toUpperCase().replace(/[.\/&]/g, ' ').replace(/\s+/g, ' ').trim();
+  const lmapNorm = {};
+  for (const [k, v] of Object.entries(lmap)) lmapNorm[normLabel(k)] = v;
+  const getL = (...keys) => {
+    for (const k of keys) {
+      const exact = lmap[k];
+      if (exact) return exact;
+      const norm = lmapNorm[normLabel(k)];
+      if (norm) return norm;
+    }
+    return null;
+  };
+
+  invoiceNo = getL(
+    'INVOICE NO', 'INVOICE NUMBER', 'INVOICE #', 'INVOICE',
+    'ORDER NO', 'ORDER NUMBER',
+    'DOCUMENT NO', 'DOCUMENT NUMBER',
+    'RECEIPT NO', 'RECEIPT NUMBER',
+    'TRANSACTION NO', 'TRANSACTION NUMBER'
+  );
 
   const rawDate =
     lmap['INVOICE DATE'] ||
@@ -1155,15 +1185,20 @@ function extractFieldsFromLlama(content) {
   }
 
   // ── ST-specific fields from lmap (fallback before JSON overlay) ──
-  poNumber = lmap['PURCHASE ORDER NO'] || lmap['PURCHASE ORDER NUMBER'] ||
-             lmap['PO NO'] || lmap['PO NUMBER'] || lmap['PO #'] || null;
-
-  requiredDate = parseDate(
-    lmap['REQUIRED DATE'] || lmap['DELIVERY DATE'] || lmap['SHIP DATE'] || null
+  poNumber = getL(
+    'PURCHASE ORDER NO', 'PURCHASE ORDER NUMBER', 'PURCHASE ORDER',
+    'PO NO', 'PO NUMBER', 'PO #', 'P.O. NO', 'P.O. NUMBER', 'P.O. #',
+    'YOUR ORDER', 'YOUR ORDER NO', 'YOUR ORDER NUMBER',
+    'CUSTOMER PO', 'CUSTOMER P.O.', 'CUSTOMER ORDER'
   );
 
-  vendorInvoiceNo = lmap['VENDOR INVOICE NO'] || lmap['VENDOR INVOICE NUMBER'] ||
-                    lmap['VENDOR INVOICE'] || invoiceNo || null;
+  requiredDate = parseDate(
+    getL('REQUIRED DATE', 'DELIVERY DATE', 'SHIP DATE', 'NEED BY', 'NEED BY DATE')
+  );
+
+  vendorInvoiceNo = getL(
+    'VENDOR INVOICE NO', 'VENDOR INVOICE NUMBER', 'VENDOR INVOICE'
+  ) || invoiceNo || null;
 
   // ── JSON block overlay — highest priority for ST-specific fields ──
   let structured = null;
@@ -1227,22 +1262,34 @@ function extractFieldsFromLlama(content) {
     }
   }
 
-  // Extract tax amount
+  // Extract tax amount — sum all tax-type lines (Canadian invoices often print GST + PST separately)
   let tax = null;
-  for (const lbl of ['TAX', 'GST', 'HST', 'PST', 'VAT', 'SALES TAX', 'TAX AMOUNT', 'TOTAL TAX']) {
-    const rawTax = lmap[lbl];
+  const TAX_LABELS = [
+    'TOTAL TAX', 'TAX AMOUNT', 'SALES TAX', 'TAX',
+    'GST', 'HST', 'PST', 'QST', 'VAT',
+    'GST HST', 'GST/HST', 'G.S.T./H.S.T.', 'G.S.T. H.S.T.',
+    'G.S.T.', 'H.S.T.', 'P.S.T.', 'Q.S.T.'
+  ];
+  const seenTaxVals = new Set();
+  for (const lbl of TAX_LABELS) {
+    const rawTax = getL(lbl);
     if (rawTax) {
-      const n = parseFloat(rawTax.replace(/[$,]/g, ''));
-      if (!isNaN(n) && n >= 0) { tax = n; break; }
+      const n = parseFloat(String(rawTax).replace(/[$,]/g, ''));
+      if (!isNaN(n) && n >= 0 && !seenTaxVals.has(n)) {
+        seenTaxVals.add(n);
+        tax = (tax || 0) + n;
+        // Stop early if we hit a labelled "TOTAL TAX" / "TAX AMOUNT" / "SALES TAX" — those are pre-summed
+        if (/TOTAL TAX|TAX AMOUNT|SALES TAX/i.test(lbl)) break;
+      }
     }
   }
 
   // Extract shipping/freight amount
   let shipping = null;
   for (const lbl of ['SHIPPING', 'FREIGHT', 'DELIVERY', 'SHIPPING & HANDLING', 'S&H', 'SHIPPING CHARGE', 'FREIGHT CHARGE']) {
-    const rawShip = lmap[lbl];
+    const rawShip = getL(lbl);
     if (rawShip) {
-      const n = parseFloat(rawShip.replace(/[$,]/g, ''));
+      const n = parseFloat(String(rawShip).replace(/[$,]/g, ''));
       if (!isNaN(n) && n >= 0) { shipping = n; break; }
     }
   }
@@ -1273,6 +1320,12 @@ async function parseWithGemini(fileBuffer, mimeType, model = GEMINI_MODEL) {
 
 Formatting rules (follow exactly):
 - Output the SUPPLIER/ISSUER company name as a # H1 heading — this is the company that SENT or ISSUED the invoice (the seller), NOT the customer, bill-to party, or the company whose logo appears in a header watermark. For example, if "Sasquatch Heat Pumps" is printed at the top as the customer and "Andrew Sheret Limited" is the seller shown in the body, output "# Andrew Sheret Limited".
+- "SOLD TO", "BILL TO", "SHIP TO", and "CUSTOMER" sections always describe the CUSTOMER (the recipient of the invoice). NEVER use any of these as the vendorName. The vendor is the company whose name/logo appears at the top of the document (e.g. "THE MASTER GROUP INC", "GESCAN LANGFORD", "ANDREW SHERET LIMITED").
+- IGNORE watermark or stamp text like "*** DUPLICATE ***", "*** COPY ***", "ORIGINAL", "VOID", "PAID" — these are not data fields.
+- Many invoices have a header table with column labels in one row and values in the row below (e.g. "CUSTOMER NO. | YOUR ORDER | CLERK | DATE | INVOICE" with values "99295 | 67630170-001 | Perrin Dixon | 11/05/26 | 74069953-00" beneath). Output these as a proper <table> with <tr><th> for labels and <tr><td> for values so each column pairs correctly.
+- "YOUR ORDER" / "CUSTOMER PO" / "CUSTOMER ORDER" is the customer's PO reference number — put it in poNumber.
+- "INVOICE" / "INVOICE NO" / "INVOICE NUMBER" column on the supplier's invoice is the supplier's invoice number — put it in vendorInvoiceNo.
+- The "Invoice Total" / "Grand Total" / "Amount Due" at the very bottom is the grand total — put that in totalAmount, not the pre-tax subtotal labelled "Total".
 - Output every table as an HTML <table> with <tr><th> for header rows and <tr><td> for data cells
 - Preserve every value exactly as printed — do not round numbers, reformat dates, or paraphrase
 - Include ALL rows: header rows, sub-header rows, data rows, totals rows
