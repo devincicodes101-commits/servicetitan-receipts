@@ -1153,6 +1153,8 @@ async function extractFile(file, id) {
       r.vendor         = d.vendor          || '';
       r.invoice        = d.invoiceNo       || '';
       r.amount         = d.total           || '';
+      r.tax            = d.tax        != null ? d.tax        : null;
+      r.shipping       = d.shipping   != null ? d.shipping   : null;
       r.jobId          = d.jobNo           || '';
       r.invoiceDate    = d.date            || '';
       r.poNumber       = d.poNumber        || '';
@@ -1240,6 +1242,8 @@ function pollIncomingStatus(incomingId, localId) {
         r.vendor          = d.vendor          || '';
         r.invoice         = d.invoiceNo       || '';
         r.amount          = d.total           || '';
+        r.tax             = d.tax        != null ? d.tax        : null;
+        r.shipping        = d.shipping   != null ? d.shipping   : null;
         r.jobId           = d.jobNo           || '';
         r.invoiceDate     = d.date            || '';
         r.poNumber        = d.poNumber        || '';
@@ -1359,6 +1363,8 @@ async function loadReceiptsFromDB() {
           vendor:        d.vendor          || '',
           invoice:       d.invoiceNo       || '',
           amount:        d.total           || '',
+          tax:           d.tax        != null ? d.tax        : null,
+          shipping:      d.shipping   != null ? d.shipping   : null,
           jobId:         d.jobNo           || '',
           invoiceDate:   d.date            || '',
           poNumber:      d.poNumber        || '',
