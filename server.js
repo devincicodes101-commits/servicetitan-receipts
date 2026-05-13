@@ -1354,18 +1354,32 @@ function extractFieldsFromLlama(content) {
   }
 
   // ── Plain-text tax fallback ──
-  // Master-style invoices print taxes as right-aligned plain text outside any
-  // table (e.g. "G.S.T./H.S.T.  398.12  /  P.S.T.  81.83"). When the label
-  // parser misses them, sniff them out of the raw Gemini output directly.
-  // Matches dotted forms too: G.S.T., P.S.T., Q.S.T.
+  // Master-style invoices print tax lines as right-aligned plain text outside
+  // any table. Strip HTML tags first so the regexes match uniformly regardless
+  // of whether Gemini wrapped the totals block in a <table>. The patterns are
+  // generous with dots and inner spacing so "G.S.T./H.S.T.", "GST/HST",
+  // "G S T H S T", "PST", and "P.S.T." all match.
   if (tax === null || tax === 0) {
+    const plain = content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+
+    const matchTax = (re) => {
+      const m = plain.match(re);
+      if (!m) return 0;
+      const n = parseFloat(m[1].replace(/,/g, ''));
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    };
+
     let plainTax = 0;
-    const gstHst = content.match(/(?:G\.?\s*S\.?\s*T\.?\s*\/?\s*H\.?\s*S\.?\s*T\.?|GST\s*\/?\s*HST|\bH\.?\s*S\.?\s*T\.?\b|\bG\.?\s*S\.?\s*T\.?\b)\s*[:$]?\s*([\d,]+\.\d{2})/i);
-    if (gstHst) plainTax += parseFloat(gstHst[1].replace(/,/g, '')) || 0;
-    const pst = content.match(/\bP\.?\s*S\.?\s*T\.?\b\s*[:$]?\s*([\d,]+\.\d{2})/i);
-    if (pst) plainTax += parseFloat(pst[1].replace(/,/g, '')) || 0;
-    const qst = content.match(/\bQ\.?\s*S\.?\s*T\.?\b\s*[:$]?\s*([\d,]+\.\d{2})/i);
-    if (qst) plainTax += parseFloat(qst[1].replace(/,/g, '')) || 0;
+    // Combined GST/HST
+    plainTax += matchTax(/G\s*\.?\s*S\s*\.?\s*T\s*\.?\s*\/\s*H\s*\.?\s*S\s*\.?\s*T\s*\.?\s*[:$]?\s*([\d,]+\.\d{2})/i);
+    if (plainTax === 0) {
+      // Either alone
+      plainTax += matchTax(/(?:^|[^A-Z])G\s*\.?\s*S\s*\.?\s*T\s*\.?(?!\s*\/)\s*[:$]?\s*([\d,]+\.\d{2})/i);
+      plainTax += matchTax(/(?:^|[^A-Z])H\s*\.?\s*S\s*\.?\s*T\s*\.?(?!\s*\/)\s*[:$]?\s*([\d,]+\.\d{2})/i);
+    }
+    plainTax += matchTax(/(?:^|[^A-Z])P\s*\.?\s*S\s*\.?\s*T\s*\.?\s*[:$]?\s*([\d,]+\.\d{2})/i);
+    plainTax += matchTax(/(?:^|[^A-Z])Q\s*\.?\s*S\s*\.?\s*T\s*\.?\s*[:$]?\s*([\d,]+\.\d{2})/i);
+
     if (plainTax > 0) tax = plainTax;
   }
 
@@ -2222,14 +2236,17 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
   };
 
   // ── Line items — with per-item ST SKU lookup ──
-  // Drop placeholder rows that weren't shipped (qty 0 AND no line total) so
-  // ST doesn't charge them at unit price. Invoice line totals already exclude
-  // these, so the PO total stays consistent with the invoice.
+  // Drop non-shipped lines. Trust the invoice's TOTAL column: if total === 0,
+  // the line wasn't charged on the invoice (Master line 5 is qty 0, but Gemini
+  // sometimes guesses qty=1 — using total as the source of truth avoids that).
+  // If total is missing, fall back to "has positive qty and unit price".
   const shippedItems = (lineItems || []).filter(li => {
-    const q = parseFloat(li.qty);
     const t = parseFloat(li.total);
-    const u = parseFloat(li.unit) || parseFloat(li.cost);
-    return (q > 0) || (t > 0) || ((q === 0 || !q) && u > 0 && t > 0);
+    if (Number.isFinite(t) && t === 0) return false;          // explicit 0 → excluded
+    if (Number.isFinite(t) && t > 0) return true;             // positive total → included
+    const q = parseFloat(li.qty) || 0;
+    const u = parseFloat(li.unit) || parseFloat(li.cost) || 0;
+    return q > 0 && u > 0;                                    // missing total → fall back
   });
 
   const rawItems = (shippedItems.length > 0)
