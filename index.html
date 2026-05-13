@@ -40,7 +40,7 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
 
 .view { display: none; position: absolute; inset: 0; }
 .view.active { display: flex; flex-direction: column; overflow-y: auto; padding: 16px; gap: 16px; }
-.view.triview.active { display: grid; grid-template-columns: 300px 1fr 360px; padding: 0; gap: 0; overflow: hidden; }
+.view.triview.active { display: grid; grid-template-columns: 280px minmax(0, 1fr) 480px; padding: 0; gap: 0; overflow: hidden; }
 
 /* ============ SIDEBAR ============ */
 .sidebar { background: var(--card); border-right: 1px solid var(--line); padding: 22px 14px; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
