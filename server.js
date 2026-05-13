@@ -1353,6 +1353,22 @@ function extractFieldsFromLlama(content) {
     }
   }
 
+  // ── Plain-text tax fallback ──
+  // Master-style invoices print taxes as right-aligned plain text outside any
+  // table (e.g. "G.S.T./H.S.T.  398.12  /  P.S.T.  81.83"). When the label
+  // parser misses them, sniff them out of the raw Gemini output directly.
+  // Matches dotted forms too: G.S.T., P.S.T., Q.S.T.
+  if (tax === null || tax === 0) {
+    let plainTax = 0;
+    const gstHst = content.match(/(?:G\.?\s*S\.?\s*T\.?\s*\/?\s*H\.?\s*S\.?\s*T\.?|GST\s*\/?\s*HST|\bH\.?\s*S\.?\s*T\.?\b|\bG\.?\s*S\.?\s*T\.?\b)\s*[:$]?\s*([\d,]+\.\d{2})/i);
+    if (gstHst) plainTax += parseFloat(gstHst[1].replace(/,/g, '')) || 0;
+    const pst = content.match(/\bP\.?\s*S\.?\s*T\.?\b\s*[:$]?\s*([\d,]+\.\d{2})/i);
+    if (pst) plainTax += parseFloat(pst[1].replace(/,/g, '')) || 0;
+    const qst = content.match(/\bQ\.?\s*S\.?\s*T\.?\b\s*[:$]?\s*([\d,]+\.\d{2})/i);
+    if (qst) plainTax += parseFloat(qst[1].replace(/,/g, '')) || 0;
+    if (plainTax > 0) tax = plainTax;
+  }
+
   // Extract shipping/freight amount
   let shipping = null;
   for (const lbl of ['SHIPPING', 'FREIGHT', 'DELIVERY', 'SHIPPING & HANDLING', 'S&H', 'SHIPPING CHARGE', 'FREIGHT CHARGE']) {
