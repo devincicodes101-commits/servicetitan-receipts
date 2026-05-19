@@ -1017,8 +1017,15 @@ function extractFieldsFromLlama(content) {
 
   date = parseDate(rawDate);
   if (!date) {
+    // Numeric formats first (MM/DD/YYYY or DD/MM/YYYY)
     const anyDate = content.match(/\b(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})\b/);
     if (anyDate) date = parseDate(anyDate[1]);
+  }
+  if (!date) {
+    // Month-name format: "May 14, 2026" — used by Andrew Sheret-style invoices
+    // where the date sits in an "Information" row Gemini sometimes flattens to text.
+    const anyMonth = content.match(/\b([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})\b/);
+    if (anyMonth) date = parseDate(anyMonth[0]);
   }
 
   const JOB_LABELS = [
