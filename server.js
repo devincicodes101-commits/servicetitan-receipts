@@ -1012,6 +1012,7 @@ function extractFieldsFromLlama(content) {
     lmap['RECEIPT DATE'] ||
     lmap['ISSUED'] ||
     lmap['ORDER DATE'] ||
+    lmap['INFORMATION'] ||   // Andrew Sheret invoices print the date in the "Information" row
     null;
 
   date = parseDate(rawDate);
@@ -1314,15 +1315,21 @@ function extractFieldsFromLlama(content) {
   //   "67819132-MT-MS / MASON"   → 67819132
   //   "68025967/RYAN"            → 68025967
   // Requires ≥6 leading digits to avoid catching invoice numbers like "01-062433".
-  if (!jobNo || !poNumber) {
-    const notes = getL('NOTES', 'NOTE');
-    if (notes) {
-      const m = String(notes).trim().match(/^(\d{6,})\b/);
-      if (m && !isYear(m[1])) {
-        if (!jobNo)    jobNo    = m[1];
-        if (!poNumber) poNumber = m[1];
-      }
+  const notesValue = getL('NOTES', 'NOTE');
+  const isAndrewSheretStyle = !!(notesValue && /^\d{6,}\b/.test(String(notesValue).trim()));
+  if (isAndrewSheretStyle && (!jobNo || !poNumber)) {
+    const m = String(notesValue).trim().match(/^(\d{6,})\b/);
+    if (m && !isYear(m[1])) {
+      if (!jobNo)    jobNo    = m[1];
+      if (!poNumber) poNumber = m[1];
     }
+  }
+
+  // ── Andrew Sheret-style: default requiredDate to invoice date ──
+  // ASL invoices only print one date (in the "Information" row). Mirror it
+  // into Required Date so both UI fields show the same value.
+  if (isAndrewSheretStyle && !requiredDate && date) {
+    requiredDate = date;
   }
 
   // ── Master-style: total = sum of line item totals (pre-tax subtotal) ──
