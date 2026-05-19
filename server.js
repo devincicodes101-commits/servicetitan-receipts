@@ -867,6 +867,19 @@ function extractFieldsFromLlama(content) {
       return `${yyyy}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
     }
 
+    // Month-name format: "May 14, 2026" / "May 14 2026" / "14 May 2026"
+    const months = { jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, oct:10, nov:11, dec:12 };
+    m = str.match(/([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})/);
+    if (m) {
+      const mo = months[m[1].slice(0,3).toLowerCase()];
+      if (mo) return `${m[3]}-${String(mo).padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+    }
+    m = str.match(/(\d{1,2})\s+([A-Za-z]{3,9}),?\s+(\d{4})/);
+    if (m) {
+      const mo = months[m[2].slice(0,3).toLowerCase()];
+      if (mo) return `${m[3]}-${String(mo).padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+    }
+
     return null;
   }
 
@@ -1295,6 +1308,23 @@ function extractFieldsFromLlama(content) {
     if (m && !isYear(m[1])) jobNo = m[1];
   }
 
+  // ── Andrew Sheret-style: derive jobNo / poNumber from "Notes" field ──
+  // ASL invoices put the customer's PO/job reference in a "Notes" field as a
+  // numeric prefix followed by metadata, e.g.:
+  //   "67819132-MT-MS / MASON"   → 67819132
+  //   "68025967/RYAN"            → 68025967
+  // Requires ≥6 leading digits to avoid catching invoice numbers like "01-062433".
+  if (!jobNo || !poNumber) {
+    const notes = getL('NOTES', 'NOTE');
+    if (notes) {
+      const m = String(notes).trim().match(/^(\d{6,})\b/);
+      if (m && !isYear(m[1])) {
+        if (!jobNo)    jobNo    = m[1];
+        if (!poNumber) poNumber = m[1];
+      }
+    }
+  }
+
   // ── Master-style: total = sum of line item totals (pre-tax subtotal) ──
   // Master invoices print both:    Total = 7962.41 (pre-tax subtotal)
   //                                Invoice Total = 8442.36 (with tax)
@@ -1328,15 +1358,17 @@ function extractFieldsFromLlama(content) {
   }
 
   // ── Plain-text total fallback (non-Master only) ──
-  // Sasquatch/Gescan-style PDFs may print totals as right-aligned text outside
-  // tables. Master-style already had its total set above from the "Total" label.
+  // Sasquatch/Gescan/Andrew Sheret PDFs may print totals as right-aligned text
+  // outside tables. Master-style already had its total set above. The "[^\d.]{0,40}"
+  // window allows arbitrary separator chars like ">>> $" (Andrew Sheret style)
+  // while staying short enough to avoid spanning multiple labels.
   if (!isMasterStyle && (total === null || (itemsSum > 0 && Math.abs(total) < itemsSum * 0.9))) {
     const grandMatch =
-      content.match(/\bInvoice\s+Total\b[\s$:]*([\d,]+\.\d{2})/i) ||
-      content.match(/\bGrand\s+Total\b[\s$:]*([\d,]+\.\d{2})/i) ||
-      content.match(/\bAmount\s+Due\b[\s$:]*([\d,]+\.\d{2})/i) ||
-      content.match(/\bTotal\s+Due\b[\s$:]*([\d,]+\.\d{2})/i) ||
-      content.match(/\bBalance\s+Due\b[\s$:]*([\d,]+\.\d{2})/i);
+      content.match(/\bInvoice\s+Total\b[^\d.]{0,40}([\d,]+\.\d{2})/i) ||
+      content.match(/\bGrand\s+Total\b[^\d.]{0,40}([\d,]+\.\d{2})/i) ||
+      content.match(/\bAmount\s+Due\b[^\d.]{0,40}([\d,]+\.\d{2})/i) ||
+      content.match(/\bTotal\s+Due\b[^\d.]{0,40}([\d,]+\.\d{2})/i) ||
+      content.match(/\bBalance\s+Due\b[^\d.]{0,40}([\d,]+\.\d{2})/i);
     if (grandMatch) {
       const n = parseFloat(grandMatch[1].replace(/,/g, ''));
       if (!isNaN(n) && n > 0 && (total === null || n > total)) total = n;
