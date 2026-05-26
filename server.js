@@ -2447,14 +2447,43 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     // 2. Returns → Return Receipt
     if (negativeLines.length > 0) {
       const rrItems = await Promise.all(negativeLines.map(li => buildSTItem(li, { descPrefix: '[RETURN]' })));
-      const rrBody = baseBody({
-        number:   vendorInvoiceNo || poNumber || undefined,
-        tax:      absNum(tax),               // entire tax goes here (it's a refund)
-        shipping: 0,
-        memo:     `[CREDIT NOTE — RETURN PORTION] ${memoBase}${origTotalStr}`,
-        items:    rrItems
-      });
-      console.log(`[create-rr] CREDIT NOTE return portion | items=${rrItems.length} | tax=${rrBody.tax}`);
+
+      // ST's /returns endpoint schema differs from /purchase-orders. It
+      // requires four extra fields we don't need on a PO:
+      //   - returnDate     : date the return was processed (ISO)
+      //   - returnTypeId   : FK to a return-type lookup (e.g. 1=Damaged,
+      //                      2=Wrong item, ...). Override with
+      //                      ST_RETURN_TYPE_ID if your tenant uses a
+      //                      different default.
+      //   - restockingFee  : decimal restocking charge ($0 if not charged).
+      //   - request        : reference to a "Return Request" if the return
+      //                      came from one. Standalone returns send 0.
+      const returnTypeId  = parseInt(process.env.ST_RETURN_TYPE_ID || '') || 1;
+      const restockingFee = parseFloat(process.env.ST_RESTOCKING_FEE || '0') || 0;
+
+      // Return Receipt body — uses the base scaffold MINUS the PO-only
+      // fields (typeId, requiredOn) and PLUS the return-specific ones.
+      // We rebuild rather than reuse baseBody() to keep the shapes clean.
+      const rrBody = {
+        request:             null,            // no Return Request reference (standalone return)
+        returnDate:          poDate,
+        returnTypeId,
+        restockingFee,
+        number:              vendorInvoiceNo || poNumber || undefined,
+        date:                poDate,
+        vendorId:            vendorId || undefined,
+        businessUnitId,
+        inventoryLocationId,
+        shipTo,
+        tax:                 absNum(tax),     // entire tax goes here (it's a refund)
+        shipping:            0,
+        impactsTechnicianPayroll: false,
+        memo:                `[CREDIT NOTE — RETURN PORTION] ${memoBase}${origTotalStr}`,
+        items:               rrItems
+      };
+      if (resolvedJobId) rrBody.jobId = resolvedJobId;
+
+      console.log(`[create-rr] CREDIT NOTE return portion | items=${rrItems.length} | tax=${rrBody.tax} | returnTypeId=${returnTypeId} | restockingFee=${restockingFee}`);
       rrItems.forEach((it, i) => console.log(`[create-rr]   item[${i}] sku=${it.skuId} vpn=${it.vendorPartNumber} qty=${it.quantity} cost=${it.cost}`));
 
       // ST's Return Receipt endpoint. The path can be overridden via
@@ -2465,12 +2494,14 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
         console.log(`[create-rr] created Return Receipt id=${rrData.id} number=${rrData.number}`);
         returnResult = { returnReceiptId: rrData.id, returnReceiptNumber: rrData.number };
       } catch (rrErr) {
-        // If Return Receipt endpoint fails (e.g. wrong path), surface a clear
-        // error rather than silently dropping the return half of the credit.
+        // If the endpoint or schema is wrong for this tenant, surface a clear
+        // error so the user knows exactly what to override.
         throw new Error(
           `Return Receipt post failed: ${rrErr.message}. ` +
-          `If your ST tenant uses a different endpoint for vendor returns, ` +
-          `set ST_RETURN_RECEIPT_PATH in .env (current: ${rrPath}).`
+          `If your ST tenant uses a different default return type, set ` +
+          `ST_RETURN_TYPE_ID in .env (current: ${returnTypeId}). ` +
+          `If the endpoint path is wrong, set ST_RETURN_RECEIPT_PATH ` +
+          `(current: ${rrPath}).`
         );
       }
     }
