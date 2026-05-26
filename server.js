@@ -124,34 +124,34 @@ function validateReceiptFields(fields) {
   return `Document does not appear to be a valid invoice or receipt — missing ${reasons.join(', ')}.`;
 }
 
-// Stricter check at ServiceTitan-post time: refuses to push to ST when essential
-// linking info is missing. Job number must be on the document (not derived).
-function validateForServiceTitan({ vendor, jobId, lineItems, total, tax }) {
-  // ServiceTitan's PO API requires all monetary fields to be > 0
-  // ("Item cost must be greater than 0", "Tax should be a positive value").
-  // Credit notes / return invoices carry negative amounts and need to be
-  // recorded as a Return Receipt / Credit Memo (a separate ST entity, not
-  // a Purchase Order). Block these upfront with a clear, actionable message
-  // instead of letting the user decipher raw ST validation errors.
+// Detect if any value on the document is negative (credit note / return).
+// ST's PO API doesn't accept negatives, so when we post a credit note we
+// convert all amounts to absolute values and tag the description/memo so
+// it's still identifiable in ST.
+function isCreditNote({ total, tax, lineItems }) {
   const totalNum = parseFloat(total);
   const taxNum   = parseFloat(tax);
-  const hasNegativeLine = Array.isArray(lineItems) && lineItems.some(
+  if (Number.isFinite(totalNum) && totalNum < 0) return true;
+  if (Number.isFinite(taxNum)   && taxNum   < 0) return true;
+  if (Array.isArray(lineItems) && lineItems.some(
     it => parseFloat(it.total) < 0 || parseFloat(it.unit) < 0 || parseFloat(it.cost) < 0
-  );
-  if ((Number.isFinite(totalNum) && totalNum < 0) ||
-      (Number.isFinite(taxNum)   && taxNum   < 0) ||
-      hasNegativeLine) {
-    return 'This is a credit note / return invoice (negative amounts). ServiceTitan Purchase Orders only accept positive values — please record this manually in ServiceTitan as a Return Receipt or Credit Memo referencing the original PO.';
-  }
+  )) return true;
+  return false;
+}
 
+// Stricter check at ServiceTitan-post time: refuses to push to ST when essential
+// linking info is missing. Job number must be on the document (not derived).
+function validateForServiceTitan({ vendor, jobId, lineItems, total }) {
   const missing = [];
   if (!vendor || !String(vendor).trim()) missing.push('vendor');
   if (!jobId  || !String(jobId).trim())  missing.push('job number');
-  const hasItems = Array.isArray(lineItems) && lineItems.some(
-    it => parseFloat(it.total) > 0 || parseFloat(it.unit) > 0 || parseFloat(it.cost) > 0
+  const hasNonzeroItem = Array.isArray(lineItems) && lineItems.some(
+    it => Math.abs(parseFloat(it.total) || 0) > 0
+       || Math.abs(parseFloat(it.unit)  || 0) > 0
+       || Math.abs(parseFloat(it.cost)  || 0) > 0
   );
-  const hasTotal = parseFloat(total) > 0;
-  if (!hasItems && !hasTotal) missing.push('line items / total');
+  const hasNonzeroTotal = Math.abs(parseFloat(total) || 0) > 0;
+  if (!hasNonzeroItem && !hasNonzeroTotal) missing.push('line items / total');
   if (missing.length === 0) return null;
   return `Cannot post to ServiceTitan — missing ${missing.join(', ')}.`;
 }
@@ -2348,6 +2348,16 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     }
   };
 
+  // ── Credit note detection ──
+  // ServiceTitan's PO API rejects all negative monetary values. To still get
+  // credit notes / return invoices into ST as POs (per client requirement that
+  // every receipt makes it to ST), we convert all amounts to absolute values
+  // and tag the memo + line descriptions with [CREDIT NOTE] so they remain
+  // identifiable in ST and the user knows to reconcile manually as a return.
+  const isCredit = isCreditNote({ total, tax, lineItems });
+  const sign = isCredit ? -1 : 1;
+  const absNum = v => Math.abs(parseFloat(v) || 0);
+
   // ── Line items — with per-item ST SKU lookup ──
   // Drop non-shipped lines. Trust the invoice's TOTAL column: if total === 0,
   // the line wasn't charged on the invoice (Master line 5 is qty 0, but Gemini
@@ -2370,14 +2380,28 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
 
   const items = await Promise.all(rawItems.map(async (li) => {
     const sku = await lookupSTSku(token, creds, vendorId, li.vendorPartNo || li.stPartNo, li.desc);
+    const desc = (li.desc || vendor || 'Item').trim();
     return {
       skuId:            sku ? sku.skuId : defaultSkuId,
       vendorPartNumber: sku ? sku.vendorPartNumber : ((li.vendorPartNo || li.stPartNo || 'N/A').trim() || 'N/A'),
-      description:      (li.desc || vendor || 'Item').trim(),
+      description:      isCredit ? `[CREDIT] ${desc}` : desc,
       quantity:         Math.max(1, parseFloat(li.qty) || 1),
-      cost:             parseFloat(li.unit) || 0
+      // ServiceTitan requires cost > 0 — send absolute value for credit notes.
+      // The [CREDIT] description tag and PO memo make the credit nature explicit.
+      cost:             absNum(li.unit)
     };
   }));
+
+  // Memo: tag credit notes explicitly so they're searchable in ST and the
+  // original signed amount is preserved for the user's reference.
+  let memo;
+  if (isCredit) {
+    const origTotal = parseFloat(total);
+    const totalStr  = Number.isFinite(origTotal) ? ` (Original Invoice Total: $${origTotal.toFixed(2)})` : '';
+    memo = `[CREDIT NOTE]${vendorInvoiceNo ? ` Vendor Invoice: ${vendorInvoiceNo}` : ''}${totalStr} — recorded as PO; reconcile in ST as a Return Receipt.`;
+  } else if (vendorInvoiceNo) {
+    memo = `Vendor Invoice: ${vendorInvoiceNo}`;
+  }
 
   // ── Build final payload — dynamic receipt values + fixed .env defaults ──
   const poBody = {
@@ -2389,14 +2413,12 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     businessUnitId,
     inventoryLocationId,
     shipTo,
-    // ServiceTitan's PO API rejects negative tax/shipping ("Tax should be a
-    // positive value"). For credit notes / returns where these come through
-    // negative, clamp to 0 here — line items can still carry negative cost
-    // to express the credit, but tax/shipping must be non-negative.
-    tax:                      Math.max(0, parseFloat(tax)      || 0),
-    shipping:                 Math.max(0, parseFloat(shipping) || 0),
+    // ST rejects negative tax/shipping. For credit notes we already converted
+    // line costs to absolute and tagged with [CREDIT NOTE]; do the same here.
+    tax:                      absNum(tax),
+    shipping:                 absNum(shipping),
     impactsTechnicianPayroll: false,
-    memo:                     vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined,
+    memo,
     items
   };
   // Job was already resolved in the parallel lookup above
