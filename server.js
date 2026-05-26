@@ -2349,157 +2349,172 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     }
   };
 
-  // ── Credit note detection ──
-  // ServiceTitan's PO API rejects all negative monetary values. To still get
-  // credit notes / return invoices into ST as POs (per client requirement that
-  // every receipt makes it to ST), we convert all amounts to absolute values
-  // and tag the memo + line descriptions with [CREDIT NOTE] so they remain
-  // identifiable in ST and the user knows to reconcile manually as a return.
   const isCredit = isCreditNote({ total, tax, lineItems });
-  const sign = isCredit ? -1 : 1;
   const absNum = v => Math.abs(parseFloat(v) || 0);
-
   const defaultSkuId = parseInt(process.env.ST_DEFAULT_SKU_ID || '0') || 0;
+  const stBase = 'https://api.servicetitan.io';
+  const stHeaders = {
+    'Authorization': 'Bearer ' + token,
+    'ST-App-Key':    creds.appKey,
+    'Content-Type':  'application/json'
+  };
 
-  let items;
+  // Helper: build a single ST line item (handles SKU lookup + cost/qty shape).
+  const buildSTItem = async (li, opts = {}) => {
+    const sku = await lookupSTSku(token, creds, vendorId, li.vendorPartNo || li.stPartNo, li.desc);
+    const desc = (li.desc || vendor || 'Item').trim();
+    return {
+      skuId:            sku ? sku.skuId : defaultSkuId,
+      vendorPartNumber: sku ? sku.vendorPartNumber : ((li.vendorPartNo || li.stPartNo || 'N/A').trim() || 'N/A'),
+      description:      opts.descPrefix ? `${opts.descPrefix} ${desc}`.slice(0, 500) : desc,
+      quantity:         Math.max(1, parseFloat(li.qty) || 1),
+      // ST requires cost > 0; pass absolute value (sign is encoded by which
+      // document we post to — PO for charges, Return Receipt for returns).
+      cost:             Math.round(absNum(li.unit) * 10000) / 10000
+    };
+  };
 
-  if (isCredit) {
-    // ── Credit note path ──
-    // ServiceTitan PO API has hard constraints: cost > 0 and tax >= 0. It
-    // can't express a credit/refund directly. To still get every line item
-    // visible in ST, we send each original line at its ABSOLUTE cost and
-    // tag the description with [RETURN] / [CHARGE] so the user can tell
-    // which lines were credits versus charges on the source invoice.
-    //
-    // Trade-off: ST's sub-total will be the sum of absolute line totals
-    // (not the signed net), since ST can't represent a negative PO. The
-    // [CREDIT NOTE] memo carries the original signed Invoice Total for
-    // reference, and each line description carries its own signed amount.
-    const shippedCreditLines = (lineItems || []).filter(li => {
-      const t = parseFloat(li.total);
-      if (Number.isFinite(t) && t === 0) return false;
-      if (Number.isFinite(t) && t !== 0) return true;
-      const q = parseFloat(li.qty) || 0;
-      const u = parseFloat(li.unit) || parseFloat(li.cost) || 0;
-      return q > 0 && u !== 0;
-    });
-
-    items = await Promise.all(shippedCreditLines.map(async (li) => {
-      const sku = await lookupSTSku(token, creds, vendorId, li.vendorPartNo || li.stPartNo, li.desc);
-      const desc = (li.desc || vendor || 'Item').trim();
-      const lineTotal = parseFloat(li.total) || 0;
-      const tag = lineTotal < 0 ? 'RETURN' : 'CHARGE';
-      const signedAmt = `${lineTotal < 0 ? '-' : ''}$${Math.abs(lineTotal).toFixed(2)}`;
-      return {
-        skuId:            sku ? sku.skuId : defaultSkuId,
-        vendorPartNumber: sku ? sku.vendorPartNumber : ((li.vendorPartNo || li.stPartNo || 'N/A').trim() || 'N/A'),
-        description:      `[${tag} ${signedAmt}] ${desc}`.slice(0, 500),
-        quantity:         Math.max(1, parseFloat(li.qty) || 1),
-        cost:             Math.round(Math.abs(parseFloat(li.unit) || 0) * 100) / 100
-      };
-    }));
-
-    // If after filtering we have no items (shouldn't happen on valid credit
-    // notes), fall through to error so it's visible.
-    if (items.length === 0) {
-      throw new Error('Credit note has no line items with nonzero totals — nothing to send to ServiceTitan.');
+  // Helper: post a payload to one of ST's inventory endpoints. Returns parsed
+  // JSON or throws with a useful error string.
+  const postToST = async (urlPath, body, logTag) => {
+    console.log(`[${logTag}] payload:`, JSON.stringify(body));
+    const res = await fetch(`${stBase}${urlPath}`, { method: 'POST', headers: stHeaders, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = data.errors ? JSON.stringify(data.errors) : (data.detail || data.title || JSON.stringify(data));
+      console.error(`[${logTag}] ST error ${res.status}:`, JSON.stringify(data));
+      throw new Error(detail);
     }
-  } else {
-    // ── Regular invoice path ──
-    // Drop non-shipped lines. Trust the invoice's TOTAL column: if total === 0,
-    // the line wasn't charged on the invoice (Master line 5 is qty 0, but Gemini
-    // sometimes guesses qty=1 — using total as the source of truth avoids that).
-    // If total is missing, fall back to "has positive qty and unit price".
-    const shippedItems = (lineItems || []).filter(li => {
-      const t = parseFloat(li.total);
-      if (Number.isFinite(t) && t === 0) return false;
-      if (Number.isFinite(t) && t !== 0) return true;
-      const q = parseFloat(li.qty) || 0;
-      const u = parseFloat(li.unit) || parseFloat(li.cost) || 0;
-      return q > 0 && u !== 0;
-    });
+    return data;
+  };
 
-    const rawItems = (shippedItems.length > 0)
-      ? shippedItems
-      : [{ desc: vendorInvoiceNo || vendor || 'Receipt', qty: 1, unit: '0.00', vendorPartNo: '' }];
+  // ── Helper to build the common PO/Return Receipt scaffold ──
+  const baseBody = (extra = {}) => {
+    const body = {
+      typeId,
+      date:                     poDate,
+      vendorId:                 vendorId || undefined,
+      businessUnitId,
+      inventoryLocationId,
+      shipTo,
+      impactsTechnicianPayroll: false,
+      ...extra
+    };
+    if (resolvedJobId) body.jobId = resolvedJobId;
+    return body;
+  };
 
-    items = await Promise.all(rawItems.map(async (li) => {
-      const sku = await lookupSTSku(token, creds, vendorId, li.vendorPartNo || li.stPartNo, li.desc);
-      const desc = (li.desc || vendor || 'Item').trim();
-      return {
-        skuId:            sku ? sku.skuId : defaultSkuId,
-        vendorPartNumber: sku ? sku.vendorPartNumber : ((li.vendorPartNo || li.stPartNo || 'N/A').trim() || 'N/A'),
-        description:      desc,
-        quantity:         Math.max(1, parseFloat(li.qty) || 1),
-        cost:             parseFloat(li.unit) || 0
-      };
-    }));
-  }
-
-  // Memo: tag credit notes so they're searchable in ST and preserve the
-  // original signed Invoice Total for reference.
-  let memo;
   if (isCredit) {
-    const origTotal = parseFloat(total);
-    const totalStr  = Number.isFinite(origTotal) ? ` (Original Invoice Total: $${origTotal.toFixed(2)})` : '';
-    memo = `[CREDIT NOTE]${vendorInvoiceNo ? ` Vendor Invoice: ${vendorInvoiceNo}` : ''}${totalStr} — recorded as PO; reconcile in ST as a Return Receipt.`;
-  } else if (vendorInvoiceNo) {
-    memo = `Vendor Invoice: ${vendorInvoiceNo}`;
+    // ── Credit note path: split into Purchase Order + Return Receipt ──
+    // ServiceTitan models charges and refunds on different document types:
+    //   - Purchase Order   → money OUT (charges, positive line totals)
+    //   - Return Receipt   → money BACK (refunds, returned items)
+    // Both endpoints reject negative cost, but together they give you the
+    // exact accounting: PO total - Return Receipt total = net invoice value.
+    //
+    // We split the credit note's line items by sign and post each set to its
+    // proper endpoint. Tax is allocated to the Return Receipt only (since the
+    // net effect of a credit note's tax is a refund). If the credit note only
+    // has returns (no charges), the PO step is skipped entirely.
+
+    const positiveLines = (lineItems || []).filter(li => (parseFloat(li.total) || 0) > 0);
+    const negativeLines = (lineItems || []).filter(li => (parseFloat(li.total) || 0) < 0);
+
+    const memoBase = `Vendor Invoice: ${vendorInvoiceNo || 'n/a'}`;
+    const origTotalStr = Number.isFinite(parseFloat(total)) ? ` (Original Invoice Total: $${parseFloat(total).toFixed(2)})` : '';
+
+    let poResult = null;
+    let returnResult = null;
+
+    // 1. Charges → Purchase Order
+    if (positiveLines.length > 0) {
+      const poItems = await Promise.all(positiveLines.map(li => buildSTItem(li)));
+      const poBody = baseBody({
+        number:     poNumber || undefined,
+        requiredOn: poRequiredOn,
+        tax:        0,                       // tax is fully allocated to Return Receipt
+        shipping:   absNum(shipping),
+        memo:       `[CREDIT NOTE — CHARGE PORTION] ${memoBase}${origTotalStr}`,
+        items:      poItems
+      });
+      console.log(`[create-po] CREDIT NOTE charge portion | items=${poItems.length}`);
+      poItems.forEach((it, i) => console.log(`[create-po]   item[${i}] sku=${it.skuId} vpn=${it.vendorPartNumber} qty=${it.quantity} cost=${it.cost}`));
+      const poData = await postToST(`/inventory/v2/tenant/${creds.tenantId}/purchase-orders`, poBody, 'create-po');
+      console.log(`[create-po] created PO id=${poData.id} number=${poData.number}`);
+      poResult = { poId: poData.id, poNumber: poData.number };
+    }
+
+    // 2. Returns → Return Receipt
+    if (negativeLines.length > 0) {
+      const rrItems = await Promise.all(negativeLines.map(li => buildSTItem(li, { descPrefix: '[RETURN]' })));
+      const rrBody = baseBody({
+        number:   vendorInvoiceNo || poNumber || undefined,
+        tax:      absNum(tax),               // entire tax goes here (it's a refund)
+        shipping: 0,
+        memo:     `[CREDIT NOTE — RETURN PORTION] ${memoBase}${origTotalStr}`,
+        items:    rrItems
+      });
+      console.log(`[create-rr] CREDIT NOTE return portion | items=${rrItems.length} | tax=${rrBody.tax}`);
+      rrItems.forEach((it, i) => console.log(`[create-rr]   item[${i}] sku=${it.skuId} vpn=${it.vendorPartNumber} qty=${it.quantity} cost=${it.cost}`));
+
+      // ST's Return Receipt endpoint. The path can be overridden via
+      // ST_RETURN_RECEIPT_PATH in case ST renamed it in your tenant.
+      const rrPath = (process.env.ST_RETURN_RECEIPT_PATH || '/inventory/v2/tenant/{tid}/returns').replace('{tid}', creds.tenantId);
+      try {
+        const rrData = await postToST(rrPath, rrBody, 'create-rr');
+        console.log(`[create-rr] created Return Receipt id=${rrData.id} number=${rrData.number}`);
+        returnResult = { returnReceiptId: rrData.id, returnReceiptNumber: rrData.number };
+      } catch (rrErr) {
+        // If Return Receipt endpoint fails (e.g. wrong path), surface a clear
+        // error rather than silently dropping the return half of the credit.
+        throw new Error(
+          `Return Receipt post failed: ${rrErr.message}. ` +
+          `If your ST tenant uses a different endpoint for vendor returns, ` +
+          `set ST_RETURN_RECEIPT_PATH in .env (current: ${rrPath}).`
+        );
+      }
+    }
+
+    return {
+      isCredit: true,
+      poId: poResult?.poId || null,
+      poNumber: poResult?.poNumber || null,
+      returnReceiptId: returnResult?.returnReceiptId || null,
+      returnReceiptNumber: returnResult?.returnReceiptNumber || null
+    };
   }
 
-  // ── Build final payload — dynamic receipt values + fixed .env defaults ──
-  const poBody = {
-    typeId,
-    number:                   poNumber      || undefined,
-    date:                     poDate,
-    requiredOn:               poRequiredOn,
-    vendorId:                 vendorId      || undefined,
-    businessUnitId,
-    inventoryLocationId,
-    shipTo,
-    // ST rejects negative tax/shipping. For credit notes we already converted
-    // line costs to absolute and tagged with [CREDIT NOTE]; do the same here.
-    tax:                      absNum(tax),
-    shipping:                 absNum(shipping),
-    impactsTechnicianPayroll: false,
+  // ── Regular invoice path ──
+  const shippedItems = (lineItems || []).filter(li => {
+    const t = parseFloat(li.total);
+    if (Number.isFinite(t) && t === 0) return false;
+    if (Number.isFinite(t) && t !== 0) return true;
+    const q = parseFloat(li.qty) || 0;
+    const u = parseFloat(li.unit) || parseFloat(li.cost) || 0;
+    return q > 0 && u !== 0;
+  });
+
+  const rawItems = (shippedItems.length > 0)
+    ? shippedItems
+    : [{ desc: vendorInvoiceNo || vendor || 'Receipt', qty: 1, unit: '0.00', vendorPartNo: '' }];
+
+  const items = await Promise.all(rawItems.map(li => buildSTItem(li)));
+
+  const memo = vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined;
+
+  const poBody = baseBody({
+    number:     poNumber || undefined,
+    requiredOn: poRequiredOn,
+    tax:        parseFloat(tax)      || 0,
+    shipping:   parseFloat(shipping) || 0,
     memo,
     items
-  };
-  // Job was already resolved in the parallel lookup above
-  if (resolvedJobId) {
-    poBody.jobId = resolvedJobId;
-    console.log(`[create-po] jobId "${jobId}" → ST job ${resolvedJobId}`);
-  } else if (jobId) {
-    console.warn(`[create-po] jobId "${jobId}" not found in ST — skipping job link`);
-  }
-
-  // Detailed payload log — easier to grep `[create-po]` in pm2 logs to inspect
-  // exactly what's being sent for each post, especially for credit notes.
-  console.log(`[create-po] ${isCredit ? 'CREDIT NOTE' : 'standard'} | vendor=${vendor} | jobId=${resolvedJobId || 'none'} | items=${items.length} | tax=${poBody.tax} | shipping=${poBody.shipping}`);
-  items.forEach((it, i) => {
-    console.log(`[create-po]   item[${i}] sku=${it.skuId} vpn=${it.vendorPartNumber} qty=${it.quantity} cost=${it.cost} — ${it.description.slice(0, 80)}`);
   });
-  console.log(`[create-po] full payload:`, JSON.stringify(poBody));
 
-  const poRes = await fetch(
-    `https://api.servicetitan.io/inventory/v2/tenant/${creds.tenantId}/purchase-orders`,
-    {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + token,
-        'ST-App-Key':    creds.appKey,
-        'Content-Type':  'application/json'
-      },
-      body: JSON.stringify(poBody)
-    }
-  );
+  console.log(`[create-po] standard | vendor=${vendor} | jobId=${resolvedJobId || 'none'} | items=${items.length} | tax=${poBody.tax} | shipping=${poBody.shipping}`);
+  items.forEach((it, i) => console.log(`[create-po]   item[${i}] sku=${it.skuId} vpn=${it.vendorPartNumber} qty=${it.quantity} cost=${it.cost}`));
 
-  const poData = await poRes.json();
-  if (!poRes.ok) {
-    const detail = poData.errors ? JSON.stringify(poData.errors) : (poData.detail || poData.title || JSON.stringify(poData));
-    console.error('[create-po] ST validation error:', JSON.stringify(poData));
-    throw new Error(detail);
-  }
+  const poData = await postToST(`/inventory/v2/tenant/${creds.tenantId}/purchase-orders`, poBody, 'create-po');
   console.log(`[create-po] created PO id=${poData.id} number=${poData.number}`);
   return { poId: poData.id, poNumber: poData.number };
 }
