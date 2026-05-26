@@ -126,7 +126,24 @@ function validateReceiptFields(fields) {
 
 // Stricter check at ServiceTitan-post time: refuses to push to ST when essential
 // linking info is missing. Job number must be on the document (not derived).
-function validateForServiceTitan({ vendor, jobId, lineItems, total }) {
+function validateForServiceTitan({ vendor, jobId, lineItems, total, tax }) {
+  // ServiceTitan's PO API requires all monetary fields to be > 0
+  // ("Item cost must be greater than 0", "Tax should be a positive value").
+  // Credit notes / return invoices carry negative amounts and need to be
+  // recorded as a Return Receipt / Credit Memo (a separate ST entity, not
+  // a Purchase Order). Block these upfront with a clear, actionable message
+  // instead of letting the user decipher raw ST validation errors.
+  const totalNum = parseFloat(total);
+  const taxNum   = parseFloat(tax);
+  const hasNegativeLine = Array.isArray(lineItems) && lineItems.some(
+    it => parseFloat(it.total) < 0 || parseFloat(it.unit) < 0 || parseFloat(it.cost) < 0
+  );
+  if ((Number.isFinite(totalNum) && totalNum < 0) ||
+      (Number.isFinite(taxNum)   && taxNum   < 0) ||
+      hasNegativeLine) {
+    return 'This is a credit note / return invoice (negative amounts). ServiceTitan Purchase Orders only accept positive values — please record this manually in ServiceTitan as a Return Receipt or Credit Memo referencing the original PO.';
+  }
+
   const missing = [];
   if (!vendor || !String(vendor).trim()) missing.push('vendor');
   if (!jobId  || !String(jobId).trim())  missing.push('job number');
@@ -553,7 +570,8 @@ async function processOneQueueRow(sb, row) {
         vendor:    fields.vendor,
         jobId:     fields.jobNo,
         lineItems: fields.items,
-        total:     fields.total
+        total:     fields.total,
+        tax:       fields.tax
       });
       if (stBlocker) {
         console.warn(`[process-queue] ${rowId}: skipping ST post — ${stBlocker}`);
@@ -2493,7 +2511,7 @@ app.post('/api/create-po', async (req, res) => {
 
     const { poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems, total } = req.body || {};
 
-    const blocker = validateForServiceTitan({ vendor, jobId, lineItems, total });
+    const blocker = validateForServiceTitan({ vendor, jobId, lineItems, total, tax });
     if (blocker) return res.status(400).json({ error: blocker });
 
     const result = await createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems });
