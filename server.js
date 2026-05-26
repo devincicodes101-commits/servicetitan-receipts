@@ -2372,13 +2372,31 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     // we collapse the credit note to a single synthetic line carrying the
     // net |line items sum|. Tax/shipping flow through as absolutes too, so
     // the ST total ends up equal to the absolute Invoice Total.
+    //
+    // ST requires a real SKU on every line ("Material or equipment should
+    // be assigned"). Look up SKUs for all original line items and reuse the
+    // first valid one we find for our synthetic refund line.
+    const lineSkus = await Promise.all((lineItems || []).map(li =>
+      lookupSTSku(token, creds, vendorId, li.vendorPartNo || li.stPartNo, li.desc)
+    ));
+    const firstSku = lineSkus.find(s => s && s.skuId);
+
+    if (!firstSku && !defaultSkuId) {
+      throw new Error(
+        `Cannot post credit note to ServiceTitan: none of the line items ` +
+        `(${(lineItems || []).map(li => li.vendorPartNo || li.stPartNo || '?').join(', ')}) ` +
+        `match a SKU in your ST pricebook. Add the part numbers to ST first, ` +
+        `or set ST_DEFAULT_SKU_ID in the env to a fallback SKU.`
+      );
+    }
+
     const netLineSum = (lineItems || [])
       .reduce((s, li) => s + (parseFloat(li.total) || 0), 0);
     const netAbs = Math.abs(netLineSum);
 
     items = [{
-      skuId:            defaultSkuId,
-      vendorPartNumber: 'CREDIT-NOTE',
+      skuId:            firstSku ? firstSku.skuId : defaultSkuId,
+      vendorPartNumber: firstSku ? firstSku.vendorPartNumber : 'CREDIT-NOTE',
       description:      `[CREDIT NOTE] Net refund${vendorInvoiceNo ? ` — Vendor Invoice ${vendorInvoiceNo}` : ''}. Items: ${
         (lineItems || []).map(li => {
           const t = parseFloat(li.total) || 0;
