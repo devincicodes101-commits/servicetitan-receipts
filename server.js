@@ -2371,8 +2371,12 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     businessUnitId,
     inventoryLocationId,
     shipTo,
-    tax:                      parseFloat(tax)      || 0,
-    shipping:                 parseFloat(shipping) || 0,
+    // ServiceTitan's PO API rejects negative tax/shipping ("Tax should be a
+    // positive value"). For credit notes / returns where these come through
+    // negative, clamp to 0 here — line items can still carry negative cost
+    // to express the credit, but tax/shipping must be non-negative.
+    tax:                      Math.max(0, parseFloat(tax)      || 0),
+    shipping:                 Math.max(0, parseFloat(shipping) || 0),
     impactsTechnicianPayroll: false,
     memo:                     vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined,
     items
