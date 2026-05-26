@@ -2359,42 +2359,70 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
   const sign = isCredit ? -1 : 1;
   const absNum = v => Math.abs(parseFloat(v) || 0);
 
-  // ── Line items — with per-item ST SKU lookup ──
-  // Drop non-shipped lines. Trust the invoice's TOTAL column: if total === 0,
-  // the line wasn't charged on the invoice (Master line 5 is qty 0, but Gemini
-  // sometimes guesses qty=1 — using total as the source of truth avoids that).
-  // If total is missing, fall back to "has positive qty and unit price".
-  const shippedItems = (lineItems || []).filter(li => {
-    const t = parseFloat(li.total);
-    if (Number.isFinite(t) && t === 0) return false;          // explicit 0 → placeholder, excluded
-    if (Number.isFinite(t) && t !== 0) return true;           // nonzero total → included (positive OR negative for credits)
-    const q = parseFloat(li.qty) || 0;
-    const u = parseFloat(li.unit) || parseFloat(li.cost) || 0;
-    return q > 0 && u !== 0;                                  // missing total → fall back
-  });
-
-  const rawItems = (shippedItems.length > 0)
-    ? shippedItems
-    : [{ desc: vendorInvoiceNo || vendor || 'Receipt', qty: 1, unit: '0.00', vendorPartNo: '' }];
-
   const defaultSkuId = parseInt(process.env.ST_DEFAULT_SKU_ID || '0') || 0;
 
-  const items = await Promise.all(rawItems.map(async (li) => {
-    const sku = await lookupSTSku(token, creds, vendorId, li.vendorPartNo || li.stPartNo, li.desc);
-    const desc = (li.desc || vendor || 'Item').trim();
-    return {
-      skuId:            sku ? sku.skuId : defaultSkuId,
-      vendorPartNumber: sku ? sku.vendorPartNumber : ((li.vendorPartNo || li.stPartNo || 'N/A').trim() || 'N/A'),
-      description:      isCredit ? `[CREDIT] ${desc}` : desc,
-      quantity:         Math.max(1, parseFloat(li.qty) || 1),
-      // ServiceTitan requires cost > 0 — send absolute value for credit notes.
-      // The [CREDIT] description tag and PO memo make the credit nature explicit.
-      cost:             absNum(li.unit)
-    };
-  }));
+  let items;
 
-  // Memo: tag credit notes explicitly so they're searchable in ST and the
-  // original signed amount is preserved for the user's reference.
+  if (isCredit) {
+    // ── Credit note path ──
+    // The invoice can mix returns (negative line totals) with new charges
+    // (positive line totals). Trying to express that as a PO with absolute
+    // line costs inflates the PO total (sum of magnitudes instead of net).
+    // To keep the ST PO total matching the source invoice's |Invoice Total|,
+    // we collapse the credit note to a single synthetic line carrying the
+    // net |line items sum|. Tax/shipping flow through as absolutes too, so
+    // the ST total ends up equal to the absolute Invoice Total.
+    const netLineSum = (lineItems || [])
+      .reduce((s, li) => s + (parseFloat(li.total) || 0), 0);
+    const netAbs = Math.abs(netLineSum);
+
+    items = [{
+      skuId:            defaultSkuId,
+      vendorPartNumber: 'CREDIT-NOTE',
+      description:      `[CREDIT NOTE] Net refund${vendorInvoiceNo ? ` — Vendor Invoice ${vendorInvoiceNo}` : ''}. Items: ${
+        (lineItems || []).map(li => {
+          const t = parseFloat(li.total) || 0;
+          const tag = t < 0 ? 'RETURN' : 'CHARGE';
+          return `${tag} ${li.vendorPartNo || li.desc || ''} ($${Math.abs(t).toFixed(2)})`;
+        }).filter(Boolean).join('; ')
+      }`.slice(0, 500),
+      quantity:         1,
+      cost:             Math.round(netAbs * 100) / 100 || 0.01
+    }];
+  } else {
+    // ── Regular invoice path ──
+    // Drop non-shipped lines. Trust the invoice's TOTAL column: if total === 0,
+    // the line wasn't charged on the invoice (Master line 5 is qty 0, but Gemini
+    // sometimes guesses qty=1 — using total as the source of truth avoids that).
+    // If total is missing, fall back to "has positive qty and unit price".
+    const shippedItems = (lineItems || []).filter(li => {
+      const t = parseFloat(li.total);
+      if (Number.isFinite(t) && t === 0) return false;
+      if (Number.isFinite(t) && t !== 0) return true;
+      const q = parseFloat(li.qty) || 0;
+      const u = parseFloat(li.unit) || parseFloat(li.cost) || 0;
+      return q > 0 && u !== 0;
+    });
+
+    const rawItems = (shippedItems.length > 0)
+      ? shippedItems
+      : [{ desc: vendorInvoiceNo || vendor || 'Receipt', qty: 1, unit: '0.00', vendorPartNo: '' }];
+
+    items = await Promise.all(rawItems.map(async (li) => {
+      const sku = await lookupSTSku(token, creds, vendorId, li.vendorPartNo || li.stPartNo, li.desc);
+      const desc = (li.desc || vendor || 'Item').trim();
+      return {
+        skuId:            sku ? sku.skuId : defaultSkuId,
+        vendorPartNumber: sku ? sku.vendorPartNumber : ((li.vendorPartNo || li.stPartNo || 'N/A').trim() || 'N/A'),
+        description:      desc,
+        quantity:         Math.max(1, parseFloat(li.qty) || 1),
+        cost:             parseFloat(li.unit) || 0
+      };
+    }));
+  }
+
+  // Memo: tag credit notes so they're searchable in ST and preserve the
+  // original signed Invoice Total for reference.
   let memo;
   if (isCredit) {
     const origTotal = parseFloat(total);
