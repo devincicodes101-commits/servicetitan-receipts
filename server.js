@@ -1371,13 +1371,19 @@ function extractFieldsFromLlama(content) {
   // ── Master-style: recalculate effective unit cost from total / quantity ──
   // Master line items can have a DISC. % column where:
   //   PRICE=12551.00, DISC.%=64.00, TOTAL=4518.36 (effective cost per unit after discount)
-  // ST has no per-line discount field, so we use the discounted unit cost.
+  // EECOL line items can have a PER C column (per-100 pricing) where the displayed
+  // UNIT PRICE doesn't multiply with quantity directly; the EXTENSION column already
+  // bakes in the per-100 math.
+  // ST has no per-line discount or per-100 field, so we send the discounted/effective
+  // unit cost at 4-decimal precision — 2 dp rounding loses up to ~$1 per invoice on
+  // high-qty PER C items (e.g. 250 × 0.48112 → 250 × 0.48 = 120.00, losing $0.28
+  // versus the true $120.28). ST accepts 4 dp on the API even though the UI shows 2.
   if (isMasterStyle && items.length > 0) {
     items.forEach(li => {
       const t = parseFloat(li.total);
       const q = parseFloat(li.qty);
       if (Number.isFinite(t) && Number.isFinite(q) && q > 0 && t > 0) {
-        li.unit = Math.round((t / q) * 100) / 100;
+        li.unit = Math.round((t / q) * 10000) / 10000;
       }
     });
   }
