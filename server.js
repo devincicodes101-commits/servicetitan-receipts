@@ -1260,8 +1260,10 @@ function extractFieldsFromLlama(content) {
     if (structured.totalAmount)     total        = structured.totalAmount;
     if (structured.poNumber)        poNumber     = structured.poNumber;
     if (structured.requiredDate)    requiredDate = parseDate(structured.requiredDate) || requiredDate;
-    if (typeof structured.taxAmount === 'number' && structured.taxAmount > 0)      geminiTax = structured.taxAmount;
-    if (typeof structured.shippingAmount === 'number' && structured.shippingAmount > 0) geminiShipping = structured.shippingAmount;
+    // Accept any finite number (including zero and negative) so credit notes
+    // and return invoices propagate their negative tax/shipping through to ST.
+    if (typeof structured.taxAmount === 'number' && Number.isFinite(structured.taxAmount))           geminiTax = structured.taxAmount;
+    if (typeof structured.shippingAmount === 'number' && Number.isFinite(structured.shippingAmount)) geminiShipping = structured.shippingAmount;
 
     // Always prefer job number from line items — overrides any regex-derived guess
     if (Array.isArray(structured.lineItems) && structured.lineItems.length) {
@@ -1358,9 +1360,11 @@ function extractFieldsFromLlama(content) {
   // with the first line item's amount instead of the bottom subtotal.
   // Summing the line items directly gives the correct pre-tax subtotal.
   // ServiceTitan computes the post-tax PO total itself from items + tax + shipping.
+  // sum !== 0 (not sum > 0) so credit notes / returns with negative subtotals
+  // propagate correctly.
   if (isMasterStyle && Array.isArray(items) && items.length > 0) {
     const sum = items.reduce((s, li) => s + (parseFloat(li.total) || 0), 0);
-    if (sum > 0) total = Math.round(sum * 100) / 100;
+    if (Number.isFinite(sum) && sum !== 0) total = Math.round(sum * 100) / 100;
   }
 
   // ── Master-style: default requiredDate to invoice date when not printed ──
@@ -1378,11 +1382,14 @@ function extractFieldsFromLlama(content) {
   // unit cost at 4-decimal precision — 2 dp rounding loses up to ~$1 per invoice on
   // high-qty PER C items (e.g. 250 × 0.48112 → 250 × 0.48 = 120.00, losing $0.28
   // versus the true $120.28). ST accepts 4 dp on the API even though the UI shows 2.
+  // t !== 0 (not t > 0) so credit notes / returns with negative line totals
+  // (e.g. Master "TOTAL 197.56-" meaning -$197.56) carry the discount through
+  // instead of falling back to the gross PRICE column.
   if (isMasterStyle && items.length > 0) {
     items.forEach(li => {
       const t = parseFloat(li.total);
       const q = parseFloat(li.qty);
-      if (Number.isFinite(t) && Number.isFinite(q) && q > 0 && t > 0) {
+      if (Number.isFinite(t) && Number.isFinite(q) && q > 0 && t !== 0) {
         li.unit = Math.round((t / q) * 10000) / 10000;
       }
     });
