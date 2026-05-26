@@ -586,7 +586,8 @@ async function processOneQueueRow(sb, row) {
         tax:             fields.tax              ?? null,
         shipping:        fields.shipping         ?? null,
         jobId:           fields.jobNo            || null,
-        lineItems:       fields.items            || []
+        lineItems:       fields.items            || [],
+        total:           fields.total            ?? null
       });
       stPoId = stResult.poId;
       console.log(`[process-queue] ${rowId}: ST PO created → id=${stPoId}`);
@@ -2291,7 +2292,7 @@ async function lookupSTJob(token, creds, jobNo) {
   return null;
 }
 
-async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems }) {
+async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems, total }) {
   const creds = getSTCreds();
   if (!creds) throw new Error('ServiceTitan credentials not configured');
 
@@ -2536,7 +2537,7 @@ app.post('/api/create-po', async (req, res) => {
     const blocker = validateForServiceTitan({ vendor, jobId, lineItems, total, tax });
     if (blocker) return res.status(400).json({ error: blocker });
 
-    const result = await createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems });
+    const result = await createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems, total });
     return res.json({ success: true, ...result });
   } catch (err) {
     console.error('[create-po] error:', err.message, err.stack);
