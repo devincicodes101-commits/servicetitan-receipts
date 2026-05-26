@@ -889,7 +889,8 @@ function extractFieldsFromLlama(content) {
   // Labels where we want the largest monetary value (grand total > line total)
   const MONETARY_LABELS = new Set([
     'TOTAL', 'GRAND TOTAL', 'INVOICE TOTAL', 'AMOUNT DUE',
-    'BALANCE DUE', 'TOTAL DUE', 'SUBTOTAL', 'GROSS TOTAL'
+    'BALANCE DUE', 'TOTAL DUE', 'SUBTOTAL', 'SUB-TOTAL', 'SUB TOTAL',
+    'GROSS TOTAL', 'TOTAL GOODS'
   ]);
 
   const setLmap = (lbl, val) => {
@@ -1217,7 +1218,10 @@ function extractFieldsFromLlama(content) {
     'PURCHASE ORDER NO', 'PURCHASE ORDER NUMBER', 'PURCHASE ORDER',
     'PO NO', 'PO NUMBER', 'PO #', 'P.O. NO', 'P.O. NUMBER', 'P.O. #',
     'YOUR ORDER', 'YOUR ORDER NO', 'YOUR ORDER NUMBER',
-    'CUSTOMER PO', 'CUSTOMER P.O.', 'CUSTOMER ORDER'
+    'YOUR PURCHASE ORDER NUMBER', 'YOUR PURCHASE ORDER NO',  // EECOL
+    'CUSTOMER PO', 'CUSTOMER P.O.', 'CUSTOMER ORDER',
+    'CUSTOMER PO NUMBER', 'CUSTOMER P.O. NUMBER',            // Sinclair
+    'CUSTOMER ORDER NO', 'CUSTOMER ORDER NUMBER'
   );
 
   requiredDate = parseDate(
@@ -1303,16 +1307,23 @@ function extractFieldsFromLlama(content) {
   // ONLY to this format. Other PDF types keep all previous behavior.
   const customerOrderRef = getL(
     'YOUR ORDER', 'YOUR ORDER NO', 'YOUR ORDER NUMBER',
+    'YOUR PURCHASE ORDER NUMBER', 'YOUR PURCHASE ORDER NO',  // EECOL
     'CUSTOMER PO', 'CUSTOMER P.O.', 'CUSTOMER ORDER',
+    'CUSTOMER PO NUMBER', 'CUSTOMER P.O. NUMBER',            // Sinclair
     'CUSTOMER ORDER NO', 'CUSTOMER ORDER NUMBER'
   );
   const isMasterStyle = !!customerOrderRef;
 
   // ── Master-style: derive jobNo from customer's order reference ──
-  // "YOUR ORDER 67630170-001" → jobNo = "67630170". Only when no explicit
-  // Job # was already extracted from line items.
+  // Examples:
+  //   "67630170-001"   (Master, dash + sequence)        → 67630170
+  //   "67964638nb"     (Sinclair, alphanumeric suffix)  → 67964638
+  //   "45617786MC"     (EECOL, alphanumeric suffix)     → 45617786
+  // Only when no explicit Job # was already extracted from line items.
+  // Requires ≥6 leading digits so things like "01-062433" (invoice numbers)
+  // and "2026" (years) don't get misread as jobs.
   if (isMasterStyle && !jobNo) {
-    const m = String(customerOrderRef).trim().match(/^(\d{4,})(?:[-\s]+\d+)?$/);
+    const m = String(customerOrderRef).trim().match(/^(\d{6,})/);
     if (m && !isYear(m[1])) jobNo = m[1];
   }
 
@@ -1432,15 +1443,20 @@ function extractFieldsFromLlama(content) {
     };
 
     let plainTax = 0;
+    // The "[^.\n]{0,40}?" gap allows arbitrary non-newline chars between the
+    // tax label and the amount — e.g. Sinclair prints "GST R104869441 1.61"
+    // where the GST registration number sits between the label and the value.
+    // The lazy quantifier ensures we don't span past the next tax line.
+
     // Combined GST/HST
-    plainTax += matchTax(/G\s*\.?\s*S\s*\.?\s*T\s*\.?\s*\/\s*H\s*\.?\s*S\s*\.?\s*T\s*\.?\s*[:$]?\s*([\d,]+\.\d{2})/i);
+    plainTax += matchTax(/G\s*\.?\s*S\s*\.?\s*T\s*\.?\s*\/\s*H\s*\.?\s*S\s*\.?\s*T\s*\.?[^.\n]{0,40}?([\d,]+\.\d{2})/i);
     if (plainTax === 0) {
       // Either alone
-      plainTax += matchTax(/(?:^|[^A-Z])G\s*\.?\s*S\s*\.?\s*T\s*\.?(?!\s*\/)\s*[:$]?\s*([\d,]+\.\d{2})/i);
-      plainTax += matchTax(/(?:^|[^A-Z])H\s*\.?\s*S\s*\.?\s*T\s*\.?(?!\s*\/)\s*[:$]?\s*([\d,]+\.\d{2})/i);
+      plainTax += matchTax(/(?:^|[^A-Z])G\s*\.?\s*S\s*\.?\s*T\s*\.?(?!\s*\/)[^.\n]{0,40}?([\d,]+\.\d{2})/i);
+      plainTax += matchTax(/(?:^|[^A-Z])H\s*\.?\s*S\s*\.?\s*T\s*\.?(?!\s*\/)[^.\n]{0,40}?([\d,]+\.\d{2})/i);
     }
-    plainTax += matchTax(/(?:^|[^A-Z])P\s*\.?\s*S\s*\.?\s*T\s*\.?\s*[:$]?\s*([\d,]+\.\d{2})/i);
-    plainTax += matchTax(/(?:^|[^A-Z])Q\s*\.?\s*S\s*\.?\s*T\s*\.?\s*[:$]?\s*([\d,]+\.\d{2})/i);
+    plainTax += matchTax(/(?:^|[^A-Z])P\s*\.?\s*S\s*\.?\s*T\s*\.?[^.\n]{0,40}?([\d,]+\.\d{2})/i);
+    plainTax += matchTax(/(?:^|[^A-Z])Q\s*\.?\s*S\s*\.?\s*T\s*\.?[^.\n]{0,40}?([\d,]+\.\d{2})/i);
 
     if (plainTax > 0) tax = plainTax;
   }
@@ -1486,7 +1502,7 @@ Formatting rules (follow exactly):
 - "SOLD TO", "BILL TO", "SHIP TO", and "CUSTOMER" sections always describe the CUSTOMER (the recipient of the invoice). NEVER use any of these as the vendorName. The vendor is the company whose name/logo appears at the top of the document (e.g. "THE MASTER GROUP INC", "GESCAN LANGFORD", "ANDREW SHERET LIMITED").
 - IGNORE watermark or stamp text like "*** DUPLICATE ***", "*** COPY ***", "ORIGINAL", "VOID", "PAID" — these are not data fields.
 - Many invoices have a header table with column labels in one row and values in the row below (e.g. "CUSTOMER NO. | YOUR ORDER | CLERK | DATE | INVOICE" with values "99295 | 67630170-001 | Perrin Dixon | 11/05/26 | 74069953-00" beneath). Output these as a proper <table> with <tr><th> for labels and <tr><td> for values so each column pairs correctly.
-- "YOUR ORDER" / "CUSTOMER PO" / "CUSTOMER ORDER" is the customer's PO reference number — put it in poNumber.
+- "YOUR ORDER" / "CUSTOMER PO" / "CUSTOMER ORDER" / "CUSTOMER PO NUMBER" / "YOUR PURCHASE ORDER NUMBER" is the customer's PO reference number — put it in poNumber. The value may be alphanumeric (e.g. "67964638nb", "45617786MC", "67630170-001").
 - "INVOICE" / "INVOICE NO" / "INVOICE NUMBER" column on the supplier's invoice is the supplier's invoice number — put it in vendorInvoiceNo.
 - The "Invoice Total" / "Grand Total" / "Amount Due" at the very bottom is the grand total — put that in totalAmount, not the pre-tax subtotal labelled "Total".
 - Output every table as an HTML <table> with <tr><th> for header rows and <tr><td> for data cells
