@@ -2337,11 +2337,11 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
   // If total is missing, fall back to "has positive qty and unit price".
   const shippedItems = (lineItems || []).filter(li => {
     const t = parseFloat(li.total);
-    if (Number.isFinite(t) && t === 0) return false;          // explicit 0 → excluded
-    if (Number.isFinite(t) && t > 0) return true;             // positive total → included
+    if (Number.isFinite(t) && t === 0) return false;          // explicit 0 → placeholder, excluded
+    if (Number.isFinite(t) && t !== 0) return true;           // nonzero total → included (positive OR negative for credits)
     const q = parseFloat(li.qty) || 0;
     const u = parseFloat(li.unit) || parseFloat(li.cost) || 0;
-    return q > 0 && u > 0;                                    // missing total → fall back
+    return q > 0 && u !== 0;                                  // missing total → fall back
   });
 
   const rawItems = (shippedItems.length > 0)
