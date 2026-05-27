@@ -2254,8 +2254,18 @@ async function getSTLookups(token, creds) {
     if (locationId) locationSource = 'first-available';
   }
 
-  console.log(`[st-lookups] typeId=${typeId} buId=${businessUnitId} locationId=${locationId} (${locationSource})`);
-  return { typeId, businessUnitId, locationId };
+  // Return Type — only needed when posting Return Receipts (credit notes).
+  // Auto-discover from ST so we don't depend on a hardcoded ID that the
+  // tenant may or may not have. ST_RETURN_TYPE_ID can still override.
+  const returnTypeId = parseInt(process.env.ST_RETURN_TYPE_ID || '') ||
+    await firstId(
+      `${base}/inventory/v2/tenant/${tid}/return-types?active=true&pageSize=1`,
+      `${base}/inventory/v2/tenant/${tid}/returns/types?active=true&pageSize=1`,
+      `${base}/inventory/v2/tenant/${tid}/return-receipt-types?active=true&pageSize=1`
+    );
+
+  console.log(`[st-lookups] typeId=${typeId} buId=${businessUnitId} locationId=${locationId} (${locationSource}) returnTypeId=${returnTypeId || 'none'}`);
+  return { typeId, businessUnitId, locationId, returnTypeId };
 }
 
 async function lookupSTJob(token, creds, jobNo) {
@@ -2451,15 +2461,23 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
       // ST's /returns endpoint schema differs from /purchase-orders. It
       // requires four extra fields we don't need on a PO:
       //   - returnDate     : date the return was processed (ISO)
-      //   - returnTypeId   : FK to a return-type lookup (e.g. 1=Damaged,
-      //                      2=Wrong item, ...). Override with
-      //                      ST_RETURN_TYPE_ID if your tenant uses a
-      //                      different default.
+      //   - returnTypeId   : FK to a return-type lookup. Auto-discovered
+      //                      from the tenant via getSTLookups; override
+      //                      with ST_RETURN_TYPE_ID if needed.
       //   - restockingFee  : decimal restocking charge ($0 if not charged).
       //   - request        : reference to a "Return Request" if the return
-      //                      came from one. Standalone returns send 0.
-      const returnTypeId  = parseInt(process.env.ST_RETURN_TYPE_ID || '') || 1;
+      //                      came from one. Standalone returns send null.
+      const returnTypeId  = parseInt(process.env.ST_RETURN_TYPE_ID || '') || lookups.returnTypeId;
       const restockingFee = parseFloat(process.env.ST_RESTOCKING_FEE || '0') || 0;
+
+      if (!returnTypeId) {
+        throw new Error(
+          'No ServiceTitan Return Type found in this tenant. ' +
+          'The credit note has return lines, but ST requires a returnTypeId. ' +
+          'Either create a Return Type in ST (Inventory → Settings → Return Types) ' +
+          'or set ST_RETURN_TYPE_ID in .env to a valid ID.'
+        );
+      }
 
       // Return Receipt body — uses the base scaffold MINUS the PO-only
       // fields (typeId, requiredOn) and PLUS the return-specific ones.
@@ -2551,6 +2569,40 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
 }
 
 // ── ServiceTitan connectivity test (GET /api/test-st) ──
+// Debug endpoint: probes ST for Return Types (used by credit-note posts).
+// Visit http://<host>:3002/api/test-st-returns to see what return types
+// exist in your tenant — useful when "Return Type with id X doesn't exists!"
+// errors come back from /returns.
+app.get('/api/test-st-returns', async (req, res) => {
+  try {
+    const creds = getSTCreds();
+    if (!creds) return res.status(503).json({ error: 'ST credentials not configured' });
+    const token = await getSTToken(creds);
+    const h = { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey };
+    const base = 'https://api.servicetitan.io';
+    const tid  = creds.tenantId;
+    const tryPaths = [
+      `${base}/inventory/v2/tenant/${tid}/return-types?pageSize=50`,
+      `${base}/inventory/v2/tenant/${tid}/returns/types?pageSize=50`,
+      `${base}/inventory/v2/tenant/${tid}/return-receipt-types?pageSize=50`
+    ];
+    const probes = {};
+    for (const url of tryPaths) {
+      try {
+        const r = await fetch(url, { headers: h });
+        const body = await r.text();
+        let parsed; try { parsed = JSON.parse(body); } catch { parsed = body.slice(0, 400); }
+        probes[url] = { status: r.status, body: parsed };
+      } catch (e) {
+        probes[url] = { error: e.message };
+      }
+    }
+    return res.json({ ok: true, hint: 'Set ST_RETURN_TYPE_ID in .env to a valid id from one of these responses.', probes });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/test-st', async (req, res) => {
   const result = {};
   try {
