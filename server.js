@@ -2461,11 +2461,11 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
         );
       }
 
-      // Net = sum of all line totals (negative for a refund credit note).
-      // ST PO can't carry a negative cost, so we send |net| and rely on
-      // the [CREDIT NOTE] tag + memo to convey the refund nature.
-      const netLineSum = (lineItems || []).reduce((s, li) => s + (parseFloat(li.total) || 0), 0);
-      const netAbs = Math.abs(netLineSum);
+      // Compute |Invoice Total| from line sum + tax (so ST line total negation
+      // produces exactly the source invoice's |Invoice Total|).
+      const netLineSum  = (lineItems || []).reduce((s, li) => s + (parseFloat(li.total) || 0), 0);
+      const totalAbs    = Math.abs(netLineSum) + absNum(tax);
+      const totalAbsRnd = Math.round(totalAbs * 100) / 100 || 0.01;
 
       const itemSummary = (lineItems || []).map(li => {
         const t = parseFloat(li.total) || 0;
@@ -2474,27 +2474,45 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
         return `${tag} ${part} (${t < 0 ? '-' : ''}$${Math.abs(t).toFixed(2)})`;
       }).join('; ');
 
+      // Experiment: try qty=-1 first so ST shows a negative line total
+      // (= negative PO total). If ST rejects negative qty (likely — POs are
+      // for charges only), we retry with qty=1 to at least get the receipt
+      // posted as a positive credit-note record.
       const synthItem = {
         skuId:            firstSku ? firstSku.skuId : defaultSkuId,
         vendorPartNumber: firstSku ? firstSku.vendorPartNumber : 'CREDIT-NOTE',
         description:      `[CREDIT NOTE] Net refund. Items: ${itemSummary}`.slice(0, 500),
-        quantity:         1,
-        cost:             Math.round(netAbs * 100) / 100 || 0.01
+        quantity:         -1,
+        cost:             totalAbsRnd
       };
 
       const combinedBody = baseBody({
         number:     poNumber || undefined,
         requiredOn: poRequiredOn,
-        tax:        absNum(tax),
-        shipping:   absNum(shipping),
-        memo:       `[CREDIT NOTE] ${memoBase}${origTotalStr} — recorded as single-line PO; details in line description.`,
+        tax:        0,             // tax already folded into cost so ST math = -1 × cost
+        shipping:   0,
+        memo:       `[CREDIT NOTE] ${memoBase}${origTotalStr} — single-line credit. Negative qty represents the refund.`,
         items:      [synthItem]
       });
 
-      console.log(`[create-po] credit note synthetic line | net=${netAbs} | tax=${combinedBody.tax} | items in summary: ${itemSummary}`);
+      console.log(`[create-po] credit note synthetic line | totalAbs=${totalAbsRnd} | trying qty=-1 first | items in summary: ${itemSummary}`);
 
-      const poData = await postToST(`/inventory/v2/tenant/${creds.tenantId}/purchase-orders`, combinedBody, 'create-po');
-      console.log(`[create-po] created credit-note PO id=${poData.id} number=${poData.number}`);
+      // First try with qty=-1 (negative line total). If ST rejects (likely),
+      // fall back to qty=+1 so the post still succeeds and the receipt is at
+      // least visible in ST as a positive credit-note record.
+      let poData;
+      let negQtyAccepted = false;
+      try {
+        poData = await postToST(`/inventory/v2/tenant/${creds.tenantId}/purchase-orders`, combinedBody, 'create-po');
+        negQtyAccepted = true;
+        console.log(`[create-po] negative qty ACCEPTED by ST — PO id=${poData.id} should show as -$${totalAbsRnd}`);
+      } catch (negErr) {
+        console.warn(`[create-po] negative qty rejected by ST (${negErr.message}) — retrying with qty=+1 and positive total`);
+        synthItem.quantity = 1;
+        combinedBody.memo = `[CREDIT NOTE] ${memoBase}${origTotalStr} — recorded as positive-total PO (ST rejected negative qty). Reconcile manually as a return.`;
+        poData = await postToST(`/inventory/v2/tenant/${creds.tenantId}/purchase-orders`, combinedBody, 'create-po');
+        console.log(`[create-po] created credit-note PO id=${poData.id} (positive fallback)`);
+      }
 
       return {
         isCredit: true,
@@ -2502,7 +2520,9 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
         poNumber: poData.number,
         returnReceiptId: null,
         returnReceiptNumber: null,
-        warning: `Posted as single-line PO with net absolute total. All ${(lineItems || []).length} original items listed in the line description. Configure ST_RETURN_TYPE_ID for proper Return Receipt accounting.`
+        warning: negQtyAccepted
+          ? `Posted with negative quantity — ST PO total will display as -$${totalAbsRnd}, matching the source credit note.`
+          : `ST rejected negative quantity; posted as positive-total PO ($${totalAbsRnd}). Configure ST_RETURN_TYPE_ID for proper Return Receipt accounting.`
       };
     }
 
