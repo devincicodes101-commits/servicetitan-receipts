@@ -2471,13 +2471,54 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
       const returnTypeId  = parseInt(process.env.ST_RETURN_TYPE_ID || '') || lookups.returnTypeId;
       const restockingFee = parseFloat(process.env.ST_RESTOCKING_FEE || '0') || 0;
 
+      // Fallback: if no Return Type is available in the tenant, we can't post
+      // a Return Receipt. Don't block the entire credit note though — fold
+      // the return lines into a memo on the existing PO (or a new PO-only
+      // record if there are no charge lines) so the user has a record.
       if (!returnTypeId) {
-        throw new Error(
-          'No ServiceTitan Return Type found in this tenant. ' +
-          'The credit note has return lines, but ST requires a returnTypeId. ' +
-          'Either create a Return Type in ST (Inventory → Settings → Return Types) ' +
-          'or set ST_RETURN_TYPE_ID in .env to a valid ID.'
-        );
+        const returnSummary = negativeLines.map(li => {
+          const t = parseFloat(li.total) || 0;
+          return `${li.vendorPartNo || li.desc || 'item'} ($${Math.abs(t).toFixed(2)})`;
+        }).join('; ');
+
+        const returnNote = ` [UNPOSTED RETURNS — record manually in ST: ${returnSummary}]`;
+
+        if (poResult) {
+          // We already posted the PO above. Patch its memo with the return summary.
+          console.warn(`[create-rr] skipping Return Receipt — no Return Type configured in tenant. Return summary appended to PO memo. ${returnSummary}`);
+          // ST doesn't have a simple "update memo" via this client, but we'll surface this in the response.
+          poResult.unpostedReturns = returnSummary;
+        } else {
+          // No PO was created (all lines were returns). Post a $0.01 placeholder PO
+          // tagged as a credit note so the user has a visible record in ST.
+          console.warn(`[create-rr] No Return Type and no charge lines — posting a placeholder PO with return summary in memo.`);
+          const phItems = [{
+            skuId:            (await lookupSTSku(token, creds, vendorId, negativeLines[0].vendorPartNo, negativeLines[0].desc))?.skuId || defaultSkuId,
+            vendorPartNumber: negativeLines[0].vendorPartNo || 'CREDIT-NOTE',
+            description:      `[CREDIT NOTE — RETURNS PENDING] ${returnSummary}`.slice(0, 500),
+            quantity:         1,
+            cost:             0.01
+          }];
+          const phBody = baseBody({
+            number:     vendorInvoiceNo || poNumber || undefined,
+            requiredOn: poRequiredOn,
+            tax:        0,
+            shipping:   0,
+            memo:       `[CREDIT NOTE — RETURNS NOT POSTED] ${memoBase}${origTotalStr}${returnNote}`,
+            items:      phItems
+          });
+          const phData = await postToST(`/inventory/v2/tenant/${creds.tenantId}/purchase-orders`, phBody, 'create-po');
+          poResult = { poId: phData.id, poNumber: phData.number, unpostedReturns: returnSummary };
+        }
+
+        return {
+          isCredit: true,
+          poId: poResult?.poId || null,
+          poNumber: poResult?.poNumber || null,
+          returnReceiptId: null,
+          returnReceiptNumber: null,
+          warning: `Return lines not posted to ServiceTitan — no Return Type found in tenant. Record manually: ${returnSummary}`
+        };
       }
 
       // Return Receipt body — uses the base scaffold MINUS the PO-only
@@ -2585,7 +2626,16 @@ app.get('/api/test-st-returns', async (req, res) => {
     const tryPaths = [
       `${base}/inventory/v2/tenant/${tid}/return-types?pageSize=50`,
       `${base}/inventory/v2/tenant/${tid}/returns/types?pageSize=50`,
-      `${base}/inventory/v2/tenant/${tid}/return-receipt-types?pageSize=50`
+      `${base}/inventory/v2/tenant/${tid}/return-receipt-types?pageSize=50`,
+      `${base}/inventory/v2/tenant/${tid}/inventory-return-types?pageSize=50`,
+      `${base}/inventory/v2/tenant/${tid}/vendor-return-types?pageSize=50`,
+      `${base}/inventory/v2/tenant/${tid}/material-return-types?pageSize=50`,
+      `${base}/inventory/v2/tenant/${tid}/return-reasons?pageSize=50`,
+      `${base}/inventory/v2/tenant/${tid}/returns?pageSize=1`,
+      `${base}/inventory/v2/tenant/${tid}/types/return?pageSize=50`,
+      `${base}/inventory/v2/tenant/${tid}/types?pageSize=50`,
+      `${base}/settings/v2/tenant/${tid}/return-types?pageSize=50`,
+      `${base}/settings/v2/tenant/${tid}/inventory/return-types?pageSize=50`
     ];
     const probes = {};
     for (const url of tryPaths) {
