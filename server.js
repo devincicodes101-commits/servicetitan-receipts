@@ -2416,17 +2416,19 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
   };
 
   if (isCredit) {
-    // ── Credit note path: split into Purchase Order + Return Receipt ──
-    // ServiceTitan models charges and refunds on different document types:
-    //   - Purchase Order   → money OUT (charges, positive line totals)
-    //   - Return Receipt   → money BACK (refunds, returned items)
-    // Both endpoints reject negative cost, but together they give you the
-    // exact accounting: PO total - Return Receipt total = net invoice value.
+    // ── Credit note path ──
+    // Two sub-paths depending on whether the tenant has a Return Type
+    // configured (required by ST's /returns endpoint).
     //
-    // We split the credit note's line items by sign and post each set to its
-    // proper endpoint. Tax is allocated to the Return Receipt only (since the
-    // net effect of a credit note's tax is a refund). If the credit note only
-    // has returns (no charges), the PO step is skipped entirely.
+    // 1. WITH Return Type: split charges → PO, returns → Return Receipt.
+    //    Net result matches the source invoice exactly.
+    //
+    // 2. WITHOUT Return Type: post ALL line items on a single PO with
+    //    absolute costs, tagged [CHARGE]/[RETURN] in the description.
+    //    Every item is still visible in ST, just on one document. The
+    //    sub-total will be the sum of absolutes (overstated relative to
+    //    the signed net) — this is the only way to keep all items
+    //    visible when Return Receipt posting isn't available.
 
     const positiveLines = (lineItems || []).filter(li => (parseFloat(li.total) || 0) > 0);
     const negativeLines = (lineItems || []).filter(li => (parseFloat(li.total) || 0) < 0);
@@ -2434,6 +2436,52 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     const memoBase = `Vendor Invoice: ${vendorInvoiceNo || 'n/a'}`;
     const origTotalStr = Number.isFinite(parseFloat(total)) ? ` (Original Invoice Total: $${parseFloat(total).toFixed(2)})` : '';
 
+    const returnTypeId  = parseInt(process.env.ST_RETURN_TYPE_ID || '') || lookups.returnTypeId;
+    const restockingFee = parseFloat(process.env.ST_RESTOCKING_FEE || '0') || 0;
+
+    // ── FALLBACK PATH: no Return Type in tenant ──
+    // Post everything on a single PO so every line is visible. Sign info
+    // lives in [CHARGE $X.XX] / [RETURN -$Y.YY] description tags.
+    if (negativeLines.length > 0 && !returnTypeId) {
+      console.warn(`[create-po] credit note + no Return Type configured — posting all items on a single PO with [RETURN]/[CHARGE] tags`);
+
+      const allItems = await Promise.all((positiveLines.concat(negativeLines)).map(async li => {
+        const lineTotal = parseFloat(li.total) || 0;
+        const tag = lineTotal < 0 ? `[RETURN -$${Math.abs(lineTotal).toFixed(2)}]` : `[CHARGE $${lineTotal.toFixed(2)}]`;
+        return buildSTItem(li, { descPrefix: tag });
+      }));
+
+      const returnSummary = negativeLines.map(li => {
+        const t = parseFloat(li.total) || 0;
+        return `${li.vendorPartNo || li.desc || 'item'} ($${Math.abs(t).toFixed(2)})`;
+      }).join('; ');
+
+      const combinedBody = baseBody({
+        number:     poNumber || undefined,
+        requiredOn: poRequiredOn,
+        tax:        absNum(tax),
+        shipping:   absNum(shipping),
+        memo:       `[CREDIT NOTE — all items combined, no ST Return Type] ${memoBase}${origTotalStr} | RETURNS (reconcile manually): ${returnSummary}`,
+        items:      allItems
+      });
+
+      console.log(`[create-po] credit note combined | items=${allItems.length} | tax=${combinedBody.tax}`);
+      allItems.forEach((it, i) => console.log(`[create-po]   item[${i}] sku=${it.skuId} vpn=${it.vendorPartNumber} qty=${it.quantity} cost=${it.cost} — ${it.description.slice(0,60)}`));
+
+      const poData = await postToST(`/inventory/v2/tenant/${creds.tenantId}/purchase-orders`, combinedBody, 'create-po');
+      console.log(`[create-po] created credit-note PO id=${poData.id} number=${poData.number}`);
+
+      return {
+        isCredit: true,
+        poId: poData.id,
+        poNumber: poData.number,
+        returnReceiptId: null,
+        returnReceiptNumber: null,
+        warning: `Posted as a single PO because no ST Return Type is configured. Return lines tagged [RETURN -$X] in descriptions; reconcile manually in ST. Returns: ${returnSummary}`
+      };
+    }
+
+    // ── SPLIT PATH: Return Type available, do it properly ──
     let poResult = null;
     let returnResult = null;
 
@@ -2443,7 +2491,7 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
       const poBody = baseBody({
         number:     poNumber || undefined,
         requiredOn: poRequiredOn,
-        tax:        0,                       // tax is fully allocated to Return Receipt
+        tax:        0,                       // tax fully allocated to Return Receipt
         shipping:   absNum(shipping),
         memo:       `[CREDIT NOTE — CHARGE PORTION] ${memoBase}${origTotalStr}`,
         items:      poItems
@@ -2458,68 +2506,6 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     // 2. Returns → Return Receipt
     if (negativeLines.length > 0) {
       const rrItems = await Promise.all(negativeLines.map(li => buildSTItem(li, { descPrefix: '[RETURN]' })));
-
-      // ST's /returns endpoint schema differs from /purchase-orders. It
-      // requires four extra fields we don't need on a PO:
-      //   - returnDate     : date the return was processed (ISO)
-      //   - returnTypeId   : FK to a return-type lookup. Auto-discovered
-      //                      from the tenant via getSTLookups; override
-      //                      with ST_RETURN_TYPE_ID if needed.
-      //   - restockingFee  : decimal restocking charge ($0 if not charged).
-      //   - request        : reference to a "Return Request" if the return
-      //                      came from one. Standalone returns send null.
-      const returnTypeId  = parseInt(process.env.ST_RETURN_TYPE_ID || '') || lookups.returnTypeId;
-      const restockingFee = parseFloat(process.env.ST_RESTOCKING_FEE || '0') || 0;
-
-      // Fallback: if no Return Type is available in the tenant, we can't post
-      // a Return Receipt. Don't block the entire credit note though — fold
-      // the return lines into a memo on the existing PO (or a new PO-only
-      // record if there are no charge lines) so the user has a record.
-      if (!returnTypeId) {
-        const returnSummary = negativeLines.map(li => {
-          const t = parseFloat(li.total) || 0;
-          return `${li.vendorPartNo || li.desc || 'item'} ($${Math.abs(t).toFixed(2)})`;
-        }).join('; ');
-
-        const returnNote = ` [UNPOSTED RETURNS — record manually in ST: ${returnSummary}]`;
-
-        if (poResult) {
-          // We already posted the PO above. Patch its memo with the return summary.
-          console.warn(`[create-rr] skipping Return Receipt — no Return Type configured in tenant. Return summary appended to PO memo. ${returnSummary}`);
-          // ST doesn't have a simple "update memo" via this client, but we'll surface this in the response.
-          poResult.unpostedReturns = returnSummary;
-        } else {
-          // No PO was created (all lines were returns). Post a $0.01 placeholder PO
-          // tagged as a credit note so the user has a visible record in ST.
-          console.warn(`[create-rr] No Return Type and no charge lines — posting a placeholder PO with return summary in memo.`);
-          const phItems = [{
-            skuId:            (await lookupSTSku(token, creds, vendorId, negativeLines[0].vendorPartNo, negativeLines[0].desc))?.skuId || defaultSkuId,
-            vendorPartNumber: negativeLines[0].vendorPartNo || 'CREDIT-NOTE',
-            description:      `[CREDIT NOTE — RETURNS PENDING] ${returnSummary}`.slice(0, 500),
-            quantity:         1,
-            cost:             0.01
-          }];
-          const phBody = baseBody({
-            number:     vendorInvoiceNo || poNumber || undefined,
-            requiredOn: poRequiredOn,
-            tax:        0,
-            shipping:   0,
-            memo:       `[CREDIT NOTE — RETURNS NOT POSTED] ${memoBase}${origTotalStr}${returnNote}`,
-            items:      phItems
-          });
-          const phData = await postToST(`/inventory/v2/tenant/${creds.tenantId}/purchase-orders`, phBody, 'create-po');
-          poResult = { poId: phData.id, poNumber: phData.number, unpostedReturns: returnSummary };
-        }
-
-        return {
-          isCredit: true,
-          poId: poResult?.poId || null,
-          poNumber: poResult?.poNumber || null,
-          returnReceiptId: null,
-          returnReceiptNumber: null,
-          warning: `Return lines not posted to ServiceTitan — no Return Type found in tenant. Record manually: ${returnSummary}`
-        };
-      }
 
       // Return Receipt body — uses the base scaffold MINUS the PO-only
       // fields (typeId, requiredOn) and PLUS the return-specific ones.
