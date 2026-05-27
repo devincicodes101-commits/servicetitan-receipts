@@ -2440,33 +2440,58 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     const restockingFee = parseFloat(process.env.ST_RESTOCKING_FEE || '0') || 0;
 
     // ── FALLBACK PATH: no Return Type in tenant ──
-    // Post everything on a single PO so every line is visible. Sign info
-    // lives in [CHARGE $X.XX] / [RETURN -$Y.YY] description tags.
+    // Post a single synthetic PO line carrying the NET absolute amount so
+    // the ST total matches |Invoice Total|. The line description lists every
+    // original item (charge and return) with its real signed amount, so the
+    // user can still see every item that was on the source credit note. SKU
+    // comes from the first looked-up real item, so ST's "Material assigned"
+    // validation passes.
     if (negativeLines.length > 0 && !returnTypeId) {
-      console.warn(`[create-po] credit note + no Return Type configured — posting all items on a single PO with [RETURN]/[CHARGE] tags`);
+      console.warn(`[create-po] credit note + no Return Type configured — posting one synthetic line with net absolute total`);
 
-      const allItems = await Promise.all((positiveLines.concat(negativeLines)).map(async li => {
-        const lineTotal = parseFloat(li.total) || 0;
-        const tag = lineTotal < 0 ? `[RETURN -$${Math.abs(lineTotal).toFixed(2)}]` : `[CHARGE $${lineTotal.toFixed(2)}]`;
-        return buildSTItem(li, { descPrefix: tag });
-      }));
+      // Look up SKU for at least one real item so ST accepts the line.
+      const lineSkus = await Promise.all((lineItems || []).map(li =>
+        lookupSTSku(token, creds, vendorId, li.vendorPartNo || li.stPartNo, li.desc)
+      ));
+      const firstSku = lineSkus.find(s => s && s.skuId);
+      if (!firstSku && !defaultSkuId) {
+        throw new Error(
+          `Cannot post credit note: none of the line items (${(lineItems || []).map(li => li.vendorPartNo || '?').join(', ')}) ` +
+          `match a SKU in ST. Add the part numbers in ST or set ST_DEFAULT_SKU_ID.`
+        );
+      }
 
-      const returnSummary = negativeLines.map(li => {
+      // Net = sum of all line totals (negative for a refund credit note).
+      // ST PO can't carry a negative cost, so we send |net| and rely on
+      // the [CREDIT NOTE] tag + memo to convey the refund nature.
+      const netLineSum = (lineItems || []).reduce((s, li) => s + (parseFloat(li.total) || 0), 0);
+      const netAbs = Math.abs(netLineSum);
+
+      const itemSummary = (lineItems || []).map(li => {
         const t = parseFloat(li.total) || 0;
-        return `${li.vendorPartNo || li.desc || 'item'} ($${Math.abs(t).toFixed(2)})`;
+        const tag = t < 0 ? 'RETURN' : 'CHARGE';
+        const part = li.vendorPartNo || li.desc || 'item';
+        return `${tag} ${part} (${t < 0 ? '-' : ''}$${Math.abs(t).toFixed(2)})`;
       }).join('; ');
+
+      const synthItem = {
+        skuId:            firstSku ? firstSku.skuId : defaultSkuId,
+        vendorPartNumber: firstSku ? firstSku.vendorPartNumber : 'CREDIT-NOTE',
+        description:      `[CREDIT NOTE] Net refund. Items: ${itemSummary}`.slice(0, 500),
+        quantity:         1,
+        cost:             Math.round(netAbs * 100) / 100 || 0.01
+      };
 
       const combinedBody = baseBody({
         number:     poNumber || undefined,
         requiredOn: poRequiredOn,
         tax:        absNum(tax),
         shipping:   absNum(shipping),
-        memo:       `[CREDIT NOTE — all items combined, no ST Return Type] ${memoBase}${origTotalStr} | RETURNS (reconcile manually): ${returnSummary}`,
-        items:      allItems
+        memo:       `[CREDIT NOTE] ${memoBase}${origTotalStr} — recorded as single-line PO; details in line description.`,
+        items:      [synthItem]
       });
 
-      console.log(`[create-po] credit note combined | items=${allItems.length} | tax=${combinedBody.tax}`);
-      allItems.forEach((it, i) => console.log(`[create-po]   item[${i}] sku=${it.skuId} vpn=${it.vendorPartNumber} qty=${it.quantity} cost=${it.cost} — ${it.description.slice(0,60)}`));
+      console.log(`[create-po] credit note synthetic line | net=${netAbs} | tax=${combinedBody.tax} | items in summary: ${itemSummary}`);
 
       const poData = await postToST(`/inventory/v2/tenant/${creds.tenantId}/purchase-orders`, combinedBody, 'create-po');
       console.log(`[create-po] created credit-note PO id=${poData.id} number=${poData.number}`);
@@ -2477,7 +2502,7 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
         poNumber: poData.number,
         returnReceiptId: null,
         returnReceiptNumber: null,
-        warning: `Posted as a single PO because no ST Return Type is configured. Return lines tagged [RETURN -$X] in descriptions; reconcile manually in ST. Returns: ${returnSummary}`
+        warning: `Posted as single-line PO with net absolute total. All ${(lineItems || []).length} original items listed in the line description. Configure ST_RETURN_TYPE_ID for proper Return Receipt accounting.`
       };
     }
 
