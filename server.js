@@ -1036,6 +1036,31 @@ function extractFieldsFromLlama(content) {
     lmap['INFORMATION'] ||   // Andrew Sheret invoices print the date in the "Information" row
     null;
 
+  // For 2-digit-year invoices like Master ("22/05/26"), Gemini sometimes
+  // interprets the day-month-year as year-month-day and outputs the swapped
+  // ISO date (e.g. 2022-05-26 instead of 2026-05-22). Detect implausible
+  // years and try the swap; pick whichever lands closer to today.
+  const fixSwappedYearDay = (iso) => {
+    if (!iso) return iso;
+    const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return iso;
+    const year = parseInt(m[1], 10);
+    const day  = parseInt(m[3], 10);
+    const currentYear = new Date().getFullYear();
+    if (year < currentYear - 2 || year > currentYear + 2) {
+      const newYearLast2 = day;
+      const newDay = year >= 2000 ? year - 2000 : year - 1900;
+      const newYear = newYearLast2 < 70 ? 2000 + newYearLast2 : 1900 + newYearLast2;
+      if (newDay >= 1 && newDay <= 31 &&
+          Math.abs(newYear - currentYear) < Math.abs(year - currentYear)) {
+        const swapped = `${newYear}-${m[2]}-${String(newDay).padStart(2,'0')}`;
+        console.warn(`[fields] suspicious date ${iso} (year off by ${Math.abs(year - currentYear)}); swapping year↔day → ${swapped}`);
+        return swapped;
+      }
+    }
+    return iso;
+  };
+
   date = parseDate(rawDate);
   if (!date) {
     // Numeric formats first (MM/DD/YYYY or DD/MM/YYYY)
@@ -1048,6 +1073,8 @@ function extractFieldsFromLlama(content) {
     const anyMonth = content.match(/\b([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})\b/);
     if (anyMonth) date = parseDate(anyMonth[0]);
   }
+  // Apply swap heuristic in case parseDate honored a flipped input from Gemini
+  date = fixSwappedYearDay(date);
 
   const JOB_LABELS = [
     'YOUR P.O. NO', 'YOUR P.O.NO', 'P.O. NO', 'P.O.NO', 'PO NO', 'PO #',
@@ -1505,6 +1532,12 @@ function extractFieldsFromLlama(content) {
       }
     }
   }
+
+  // Final sanity pass: catch any year↔day swap that slipped through earlier
+  // overlays / fallbacks (e.g. JSON overlay's structured.requiredDate after
+  // fixSwappedYearDay was already applied to `date`).
+  date         = fixSwappedYearDay(date);
+  requiredDate = fixSwappedYearDay(requiredDate);
 
   console.log('[fields] extracted:', { vendor, invoiceNo, date, jobNo, total, tax, shipping, poNumber, requiredDate, itemCount: items.length });
   return { vendor, invoiceNo, date, jobNo, total, tax, shipping, items, poNumber, requiredDate, vendorInvoiceNo };
