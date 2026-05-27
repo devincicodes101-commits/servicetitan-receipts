@@ -2340,12 +2340,45 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
   const today = new Date().toISOString().slice(0, 10);
   const safeDate = (s) => {
     if (!s) return null;
+    s = String(s).trim();
+    // Already ISO YYYY-MM-DD — pass through without going through new Date()
+    // (which can mis-interpret depending on locale).
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
     try { return new Date(s).toISOString().slice(0, 10); } catch { return null; }
   };
-  const poDate      = safeDate(date)         || today;
-  const rawRequiredOn = safeDate(requiredDate) || poDate;
+
+  // If a parsed date is wildly off from today (>2 years past or >1 year future),
+  // it's almost certainly a YY/DD swap from 2-digit-year extraction (e.g.
+  // "22/05/26" parsed by Gemini as 26/05/22 → 2022-05-26 instead of 2026-05-22).
+  // Detect and try the swap; pick whichever lands closer to today.
+  const fixSwappedYearDay = (iso) => {
+    if (!iso) return iso;
+    const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return iso;
+    const year = parseInt(m[1], 10);
+    const day  = parseInt(m[3], 10);
+    const currentYear = parseInt(today.slice(0, 4), 10);
+
+    // Only attempt swap when year looks suspicious AND swapping yields a
+    // plausible date (year=2000+old_day in current era, day=old_year-2000 ≤ 31).
+    if (year < currentYear - 2 || year > currentYear + 2) {
+      const newYearLast2 = day;
+      const newDay      = year >= 2000 ? year - 2000 : year - 1900;
+      const newYear     = newYearLast2 < 70 ? 2000 + newYearLast2 : 1900 + newYearLast2;
+      if (newDay >= 1 && newDay <= 31 && Math.abs(newYear - currentYear) < Math.abs(year - currentYear)) {
+        const swapped = `${newYear}-${m[2]}-${String(newDay).padStart(2,'0')}`;
+        console.warn(`[create-po] suspicious date ${iso} (year off by ${Math.abs(year - currentYear)}); swapping year↔day → ${swapped}`);
+        return swapped;
+      }
+    }
+    return iso;
+  };
+
+  const poDate        = fixSwappedYearDay(safeDate(date)) || today;
+  const rawRequiredOn = fixSwappedYearDay(safeDate(requiredDate)) || poDate;
   // ST rejects requiredOn before the PO creation date (today)
   const poRequiredOn = rawRequiredOn < today ? today : rawRequiredOn;
+  console.log(`[create-po] date input="${date}" → poDate="${poDate}" | requiredDate input="${requiredDate}" → poRequiredOn="${poRequiredOn}"`);
 
   // ── shipTo — CreateShipToRequest: { description, address: CreateAddressRequest } ──
   const shipTo = {
