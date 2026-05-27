@@ -765,7 +765,8 @@ app.use(async (req, res, next) => {
     '/api/receipt/',
     '/api/incoming-history',
     '/api/incoming-pending',
-    '/api/test-st'
+    '/api/test-st',
+    '/api/test-st-returns'
   ];
 
   if (!req.path.startsWith('/api/') || open.includes(req.path) || req.path.startsWith('/api/incoming-status/')) return next();
