@@ -2167,51 +2167,65 @@ async function lookupSTSku(token, creds, vendorId, vendorPartNo, description) {
   const base = 'https://api.servicetitan.io';
   const tid = creds.tenantId;
 
-  async function getFirst(url) {
+  async function fetchData(url) {
     try {
       const r = await fetch(url, { headers: h });
       if (!r.ok) return null;
       const d = await r.json();
-      const items = d.data || d.items || [];
-      return items[0] || null;
+      return d.data || d.items || [];
     } catch { return null; }
   }
 
   const partNo = (vendorPartNo || '').trim();
+  if (!partNo || partNo.length < 2 || partNo === 'N/A') {
+    console.log(`[sku-lookup] empty/invalid partNo — skipping`);
+    return null;
+  }
+  const partLower = partNo.toLowerCase();
 
-  // Search by vendor part number first
-  if (partNo && partNo.length > 1 && partNo !== 'N/A') {
-    const byPartWithVendor = vendorId && await getFirst(
-      `${base}/pricebook/v2/tenant/${tid}/materials?` + new URLSearchParams({ vendorId: String(vendorId), number: partNo, pageSize: '1', active: 'true' })
-    );
-    if (byPartWithVendor) {
-      console.log(`[sku-lookup] matched by part+vendor: id=${byPartWithVendor.id} for "${partNo}"`);
-      return { skuId: byPartWithVendor.id, vendorPartNumber: partNo };
-    }
-
-    const byPart = await getFirst(
-      `${base}/pricebook/v2/tenant/${tid}/materials?` + new URLSearchParams({ number: partNo, pageSize: '1', active: 'true' })
-    );
-    if (byPart) {
-      console.log(`[sku-lookup] matched by part: id=${byPart.id} for "${partNo}"`);
-      return { skuId: byPart.id, vendorPartNumber: partNo };
+  // Strategy 1: most ST pricebooks store the vendor part number as the SKU's
+  // `code` field. The API supports filtering by code= exactly. Try this first.
+  const byCode = await fetchData(
+    `${base}/pricebook/v2/tenant/${tid}/materials?` +
+    new URLSearchParams({ code: partNo, pageSize: '25', active: 'true' })
+  );
+  if (Array.isArray(byCode) && byCode.length > 0) {
+    const exact = byCode.find(m => (m.code || '').toLowerCase() === partLower);
+    if (exact) {
+      console.log(`[sku-lookup] matched by code: id=${exact.id} code="${exact.code}" for partNo="${partNo}"`);
+      return { skuId: exact.id, vendorPartNumber: exact.code || partNo };
     }
   }
 
-  // Fallback: search by description
-  const desc = (description || '').trim().slice(0, 60);
-  if (desc.length > 3) {
-    const byDesc = await getFirst(
-      `${base}/pricebook/v2/tenant/${tid}/materials?` + new URLSearchParams({ searchQuery: desc, pageSize: '1', active: 'true' })
-    );
-    if (byDesc) {
-      const resolvedPart = partNo || byDesc.code || byDesc.number || 'N/A';
-      console.log(`[sku-lookup] matched by desc: id=${byDesc.id} for "${desc}"`);
-      return { skuId: byDesc.id, vendorPartNumber: resolvedPart };
+  // Strategy 2: scan materials for this vendor and look for the part number
+  // inside vendors[].vendorPartNumber (ST allows mapping multiple vendor part
+  // numbers to one internal SKU code). Page through up to ~400 materials so
+  // a typical mid-size pricebook is covered without being slow.
+  if (vendorId) {
+    let page = 1;
+    while (page <= 4) {
+      const vendorMats = await fetchData(
+        `${base}/pricebook/v2/tenant/${tid}/materials?` +
+        new URLSearchParams({ vendorId: String(vendorId), pageSize: '100', page: String(page), active: 'true' })
+      );
+      if (!Array.isArray(vendorMats) || vendorMats.length === 0) break;
+      const match = vendorMats.find(m => {
+        if ((m.code || '').toLowerCase() === partLower) return true;
+        if (Array.isArray(m.vendors)) {
+          return m.vendors.some(v => (v.vendorPartNumber || '').toLowerCase() === partLower);
+        }
+        return false;
+      });
+      if (match) {
+        console.log(`[sku-lookup] matched in vendor's materials (page ${page}): id=${match.id} for partNo="${partNo}"`);
+        return { skuId: match.id, vendorPartNumber: match.code || partNo };
+      }
+      if (vendorMats.length < 100) break;
+      page++;
     }
   }
 
-  console.log(`[sku-lookup] no match for partNo="${partNo}" desc="${desc}" — using default skuId`);
+  console.log(`[sku-lookup] no SKU in ST pricebook matches partNo="${partNo}" — falling back to default`);
   return null;
 }
 
