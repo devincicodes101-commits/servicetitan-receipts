@@ -2283,10 +2283,33 @@ async function lookupSTSku(token, creds, vendorId, vendorPartNo, description) {
   // a cached full-pricebook map. Cache loads lazily on first lookup.
   const cache = await loadPricebookCache(token, creds);
 
-  const hit = cache.byCode.get(partLower) || cache.byVendorPart.get(partLower);
-  if (hit) {
-    console.log(`[sku-lookup] cache hit (${hit.resource}): id=${hit.skuId} code="${hit.code}" for partNo="${partNo}"`);
-    return { skuId: hit.skuId, vendorPartNumber: hit.code || partNo };
+  // 1. Exact code/displayName/vendorPart match.
+  const exact = cache.byCode.get(partLower) || cache.byVendorPart.get(partLower);
+  if (exact) {
+    console.log(`[sku-lookup] cache hit exact (${exact.resource}): id=${exact.skuId} code="${exact.code}" for partNo="${partNo}"`);
+    return { skuId: exact.skuId, vendorPartNumber: exact.code || partNo };
+  }
+
+  // 2. Contains-match: ST often stores parts with a brand prefix like
+  //    "Fortress LD92W" or "IPEX 035482" — invoice gives us just "LD92W"
+  //    so we scan keys for ones that contain the partNo as a word.
+  //    Require partNo length >= 4 to avoid matching too broadly (e.g. "PVC").
+  if (partLower.length >= 4) {
+    const wordBoundary = new RegExp(`(^|[\\s\\-_/])${partLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([\\s\\-_/]|$)`);
+    let bestKey = null;
+    let bestEntry = null;
+    let bestLen = Infinity;
+    for (const [key, entry] of cache.byCode) {
+      if (wordBoundary.test(key) && key.length < bestLen) {
+        bestKey = key;
+        bestEntry = entry;
+        bestLen = key.length;
+      }
+    }
+    if (bestEntry) {
+      console.log(`[sku-lookup] cache hit contains (${bestEntry.resource}): id=${bestEntry.skuId} code="${bestEntry.code}" via key="${bestKey}" for partNo="${partNo}"`);
+      return { skuId: bestEntry.skuId, vendorPartNumber: bestEntry.code || partNo };
+    }
   }
 
   console.log(`[sku-lookup] no SKU in ST pricebook matches partNo="${partNo}" — caller will fall back to default`);
