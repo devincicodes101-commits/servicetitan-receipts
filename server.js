@@ -2162,6 +2162,36 @@ async function lookupSTVendor(token, creds, vendorName) {
 }
 
 // Search ST pricebook for a matching SKU by vendor part number, then description
+// In-memory cache of the first valid SKU id from the tenant. Used as the
+// last-resort fallback when nothing matches the line and ST_DEFAULT_SKU_ID
+// isn't configured. ST POs require a non-zero skuId on every line.
+let _autoDefaultSkuId = null;
+
+async function ensureAutoDefaultSkuId(token, creds) {
+  if (_autoDefaultSkuId) return _autoDefaultSkuId;
+  const h = { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey };
+  const base = 'https://api.servicetitan.io';
+  const tid = creds.tenantId;
+  const tryPaths = [
+    `${base}/pricebook/v2/tenant/${tid}/materials?pageSize=1&active=true`,
+    `${base}/pricebook/v2/tenant/${tid}/equipment?pageSize=1&active=true`
+  ];
+  for (const url of tryPaths) {
+    try {
+      const r = await fetch(url, { headers: h });
+      if (!r.ok) continue;
+      const d = await r.json();
+      const first = (d.data || d.items || [])[0];
+      if (first?.id) {
+        _autoDefaultSkuId = first.id;
+        console.log(`[sku-lookup] auto-default SKU id=${first.id} ("${first.code || first.displayName || ''}")`);
+        return _autoDefaultSkuId;
+      }
+    } catch { /* try next */ }
+  }
+  return null;
+}
+
 async function lookupSTSku(token, creds, vendorId, vendorPartNo, description) {
   const h = { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey };
   const base = 'https://api.servicetitan.io';
@@ -2182,50 +2212,57 @@ async function lookupSTSku(token, creds, vendorId, vendorPartNo, description) {
     return null;
   }
   const partLower = partNo.toLowerCase();
-
-  // Strategy 1: most ST pricebooks store the vendor part number as the SKU's
-  // `code` field. The API supports filtering by code= exactly. Try this first.
-  const byCode = await fetchData(
-    `${base}/pricebook/v2/tenant/${tid}/materials?` +
-    new URLSearchParams({ code: partNo, pageSize: '25', active: 'true' })
-  );
-  if (Array.isArray(byCode) && byCode.length > 0) {
-    const exact = byCode.find(m => (m.code || '').toLowerCase() === partLower);
-    if (exact) {
-      console.log(`[sku-lookup] matched by code: id=${exact.id} code="${exact.code}" for partNo="${partNo}"`);
-      return { skuId: exact.id, vendorPartNumber: exact.code || partNo };
+  const matchesPart = (m) => {
+    if ((m.code || '').toLowerCase() === partLower) return true;
+    if ((m.displayName || '').toLowerCase() === partLower) return true;
+    if (Array.isArray(m.vendors)) {
+      return m.vendors.some(v => (v.vendorPartNumber || '').toLowerCase() === partLower);
     }
-  }
+    return false;
+  };
 
-  // Strategy 2: scan materials for this vendor and look for the part number
-  // inside vendors[].vendorPartNumber (ST allows mapping multiple vendor part
-  // numbers to one internal SKU code). Page through up to ~400 materials so
-  // a typical mid-size pricebook is covered without being slow.
-  if (vendorId) {
-    let page = 1;
-    while (page <= 4) {
-      const vendorMats = await fetchData(
-        `${base}/pricebook/v2/tenant/${tid}/materials?` +
-        new URLSearchParams({ vendorId: String(vendorId), pageSize: '100', page: String(page), active: 'true' })
-      );
-      if (!Array.isArray(vendorMats) || vendorMats.length === 0) break;
-      const match = vendorMats.find(m => {
-        if ((m.code || '').toLowerCase() === partLower) return true;
-        if (Array.isArray(m.vendors)) {
-          return m.vendors.some(v => (v.vendorPartNumber || '').toLowerCase() === partLower);
-        }
-        return false;
-      });
-      if (match) {
-        console.log(`[sku-lookup] matched in vendor's materials (page ${page}): id=${match.id} for partNo="${partNo}"`);
-        return { skuId: match.id, vendorPartNumber: match.code || partNo };
+  // Strategy 1: try code= filter against both /materials and /equipment.
+  // HVAC equipment (Moovair units, ducts, etc.) usually lives under /equipment,
+  // small parts (PVC fittings, pads, etc.) under /materials.
+  const resourcePaths = ['materials', 'equipment'];
+  for (const resource of resourcePaths) {
+    const byCode = await fetchData(
+      `${base}/pricebook/v2/tenant/${tid}/${resource}?` +
+      new URLSearchParams({ code: partNo, pageSize: '25', active: 'true' })
+    );
+    if (Array.isArray(byCode) && byCode.length > 0) {
+      const exact = byCode.find(matchesPart);
+      if (exact) {
+        console.log(`[sku-lookup] matched ${resource} by code: id=${exact.id} code="${exact.code}" for partNo="${partNo}"`);
+        return { skuId: exact.id, vendorPartNumber: exact.code || partNo };
       }
-      if (vendorMats.length < 100) break;
-      page++;
     }
   }
 
-  console.log(`[sku-lookup] no SKU in ST pricebook matches partNo="${partNo}" — falling back to default`);
+  // Strategy 2: scoped scan against this vendor's materials/equipment.
+  // Some ST tenants don't expose code= filter; pagination over vendorId catches
+  // those cases. Up to ~400 items per resource so mid-size books are covered.
+  if (vendorId) {
+    for (const resource of resourcePaths) {
+      let page = 1;
+      while (page <= 4) {
+        const items = await fetchData(
+          `${base}/pricebook/v2/tenant/${tid}/${resource}?` +
+          new URLSearchParams({ vendorId: String(vendorId), pageSize: '100', page: String(page), active: 'true' })
+        );
+        if (!Array.isArray(items) || items.length === 0) break;
+        const match = items.find(matchesPart);
+        if (match) {
+          console.log(`[sku-lookup] matched ${resource} via vendor scan (page ${page}): id=${match.id} for partNo="${partNo}"`);
+          return { skuId: match.id, vendorPartNumber: match.code || partNo };
+        }
+        if (items.length < 100) break;
+        page++;
+      }
+    }
+  }
+
+  console.log(`[sku-lookup] no SKU in ST pricebook matches partNo="${partNo}" — caller will fall back to default`);
   return null;
 }
 
@@ -2442,7 +2479,23 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
 
   const isCredit = isCreditNote({ total, tax, lineItems });
   const absNum = v => Math.abs(parseFloat(v) || 0);
-  const defaultSkuId = parseInt(process.env.ST_DEFAULT_SKU_ID || '0') || 0;
+  // Default SKU resolution order:
+  //   1. ST_DEFAULT_SKU_ID env var (explicit override)
+  //   2. First active material/equipment we can find in the tenant
+  // Without ONE of these, ST rejects every line with
+  // "Material or equipment should be assigned to purchase order item".
+  let defaultSkuId = parseInt(process.env.ST_DEFAULT_SKU_ID || '0') || 0;
+  if (!defaultSkuId) {
+    defaultSkuId = await ensureAutoDefaultSkuId(token, creds) || 0;
+  }
+  if (!defaultSkuId) {
+    throw new Error(
+      'No ServiceTitan SKU available as fallback. None of the invoice ' +
+      'line items matched a SKU in your pricebook, and ST_DEFAULT_SKU_ID ' +
+      'is not configured. Either add the parts to ST (Pricebook → Materials/' +
+      'Equipment) or set ST_DEFAULT_SKU_ID in .env to a valid material id.'
+    );
+  }
   const stBase = 'https://api.servicetitan.io';
   const stHeaders = {
     'Authorization': 'Bearer ' + token,
