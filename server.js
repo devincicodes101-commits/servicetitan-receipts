@@ -766,7 +766,8 @@ app.use(async (req, res, next) => {
     '/api/incoming-history',
     '/api/incoming-pending',
     '/api/test-st',
-    '/api/test-st-returns'
+    '/api/test-st-returns',
+    '/api/test-st-sku'
   ];
 
   if (!req.path.startsWith('/api/') || open.includes(req.path) || req.path.startsWith('/api/incoming-status/')) return next();
@@ -2779,6 +2780,64 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
 // Visit http://<host>:3002/api/test-st-returns to see what return types
 // exist in your tenant — useful when "Return Type with id X doesn't exists!"
 // errors come back from /returns.
+// Debug: probe ST pricebook for a given vendor part number.
+// Usage: /api/test-st-sku?part=UC24363
+// Returns what each strategy returned + final resolved SKU (or null).
+app.get('/api/test-st-sku', async (req, res) => {
+  try {
+    const part = (req.query.part || '').trim();
+    if (!part) return res.status(400).json({ error: 'Pass ?part=<vendor part number>' });
+    const creds = getSTCreds();
+    if (!creds) return res.status(503).json({ error: 'ST credentials not configured' });
+    const token = await getSTToken(creds);
+    const h = { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey };
+    const base = 'https://api.servicetitan.io';
+    const tid = creds.tenantId;
+
+    const probes = {};
+    const tryPaths = [
+      `${base}/pricebook/v2/tenant/${tid}/materials?code=${encodeURIComponent(part)}&pageSize=10&active=true`,
+      `${base}/pricebook/v2/tenant/${tid}/materials?code=${encodeURIComponent(part)}&pageSize=10`,
+      `${base}/pricebook/v2/tenant/${tid}/equipment?code=${encodeURIComponent(part)}&pageSize=10&active=true`,
+      `${base}/pricebook/v2/tenant/${tid}/equipment?code=${encodeURIComponent(part)}&pageSize=10`,
+      `${base}/pricebook/v2/tenant/${tid}/materials?name=${encodeURIComponent(part)}&pageSize=10`,
+      `${base}/pricebook/v2/tenant/${tid}/equipment?name=${encodeURIComponent(part)}&pageSize=10`
+    ];
+    for (const url of tryPaths) {
+      try {
+        const r = await fetch(url, { headers: h });
+        const body = await r.text();
+        let parsed; try { parsed = JSON.parse(body); } catch { parsed = body.slice(0, 400); }
+        const items = parsed?.data || parsed?.items || [];
+        probes[url] = {
+          status: r.status,
+          count: Array.isArray(items) ? items.length : 0,
+          firstFew: Array.isArray(items) ? items.slice(0, 5).map(m => ({
+            id: m.id, code: m.code, displayName: m.displayName,
+            vendorParts: (m.vendors || []).map(v => v.vendorPartNumber).filter(Boolean)
+          })) : null
+        };
+      } catch (e) {
+        probes[url] = { error: e.message };
+      }
+    }
+
+    // Also run the actual lookupSTSku to show the final result
+    const resolved = await lookupSTSku(token, creds, null, part, '');
+
+    return res.json({
+      part,
+      resolved,
+      hint: resolved
+        ? 'Found! This part should now resolve correctly on PO posts.'
+        : 'Not found in any endpoint we tried. Either the part is not in your ST pricebook (add it under Pricebook → Materials/Equipment) or it lives at a path we are not checking.',
+      probes
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/test-st-returns', async (req, res) => {
   try {
     const creds = getSTCreds();
