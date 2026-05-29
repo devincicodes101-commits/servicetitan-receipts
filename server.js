@@ -767,7 +767,9 @@ app.use(async (req, res, next) => {
     '/api/incoming-pending',
     '/api/test-st',
     '/api/test-st-returns',
-    '/api/test-st-sku'
+    '/api/test-st-sku',
+    '/api/refresh-sku-cache',
+    '/api/sku-cache-stats'
   ];
 
   if (!req.path.startsWith('/api/') || open.includes(req.path) || req.path.startsWith('/api/incoming-status/')) return next();
@@ -2193,74 +2195,98 @@ async function ensureAutoDefaultSkuId(token, creds) {
   return null;
 }
 
+// ── Full-pricebook SKU cache ──
+// ST's pricebook materials/equipment endpoints silently ignore code= and name=
+// filter parameters and return the first page regardless. The only reliable
+// lookup is to paginate through everything once, build a code/vendorPart →
+// {skuId, code, displayName} map, and resolve from the cache.
+//
+// Loaded lazily on first lookup, kept in memory for the process lifetime.
+// Reset by restart or by calling /api/refresh-sku-cache.
+let _skuCache = null;
+let _skuCacheLoading = null;
+
+async function loadPricebookCache(token, creds) {
+  if (_skuCache) return _skuCache;
+  if (_skuCacheLoading) return _skuCacheLoading;
+
+  _skuCacheLoading = (async () => {
+    const h = { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey };
+    const base = 'https://api.servicetitan.io';
+    const tid = creds.tenantId;
+    const cache = { byCode: new Map(), byVendorPart: new Map(), total: 0 };
+
+    const pageAll = async (resource) => {
+      let page = 1;
+      let resourceTotal = 0;
+      while (page <= 100) { // safety cap at 100 pages (20,000 items @ pageSize=200)
+        try {
+          const url = `${base}/pricebook/v2/tenant/${tid}/${resource}?pageSize=200&page=${page}&active=true`;
+          const r = await fetch(url, { headers: h });
+          if (!r.ok) {
+            console.warn(`[sku-cache] ${resource} page ${page} returned ${r.status}, stopping`);
+            break;
+          }
+          const d = await r.json();
+          const items = d.data || d.items || [];
+          if (!Array.isArray(items) || items.length === 0) break;
+          for (const m of items) {
+            if (!m.id) continue;
+            const entry = { skuId: m.id, code: m.code, displayName: m.displayName, resource };
+            if (m.code) cache.byCode.set(String(m.code).toLowerCase(), entry);
+            if (m.displayName) cache.byCode.set(String(m.displayName).toLowerCase(), entry);
+            if (Array.isArray(m.vendors)) {
+              for (const v of m.vendors) {
+                if (v.vendorPartNumber) cache.byVendorPart.set(String(v.vendorPartNumber).toLowerCase(), entry);
+              }
+            }
+            resourceTotal++;
+          }
+          if (items.length < 200) break;
+          page++;
+        } catch (e) {
+          console.warn(`[sku-cache] ${resource} page ${page} error: ${e.message}`);
+          break;
+        }
+      }
+      return resourceTotal;
+    };
+
+    const t0 = Date.now();
+    const matCount = await pageAll('materials');
+    const eqpCount = await pageAll('equipment');
+    cache.total = matCount + eqpCount;
+    console.log(`[sku-cache] loaded ${matCount} materials + ${eqpCount} equipment = ${cache.total} items in ${Date.now() - t0}ms`);
+    _skuCache = cache;
+    _skuCacheLoading = null;
+    return cache;
+  })();
+
+  return _skuCacheLoading;
+}
+
+function resetSkuCache() {
+  _skuCache = null;
+  _skuCacheLoading = null;
+}
+
 async function lookupSTSku(token, creds, vendorId, vendorPartNo, description) {
-  const h = { 'Authorization': 'Bearer ' + token, 'ST-App-Key': creds.appKey };
-  const base = 'https://api.servicetitan.io';
-  const tid = creds.tenantId;
-
-  async function fetchData(url) {
-    try {
-      const r = await fetch(url, { headers: h });
-      if (!r.ok) return null;
-      const d = await r.json();
-      return d.data || d.items || [];
-    } catch { return null; }
-  }
-
   const partNo = (vendorPartNo || '').trim();
   if (!partNo || partNo.length < 2 || partNo === 'N/A') {
     console.log(`[sku-lookup] empty/invalid partNo — skipping`);
     return null;
   }
   const partLower = partNo.toLowerCase();
-  const matchesPart = (m) => {
-    if ((m.code || '').toLowerCase() === partLower) return true;
-    if ((m.displayName || '').toLowerCase() === partLower) return true;
-    if (Array.isArray(m.vendors)) {
-      return m.vendors.some(v => (v.vendorPartNumber || '').toLowerCase() === partLower);
-    }
-    return false;
-  };
 
-  // Strategy 1: try code= filter against both /materials and /equipment.
-  // HVAC equipment (Moovair units, ducts, etc.) usually lives under /equipment,
-  // small parts (PVC fittings, pads, etc.) under /materials.
-  const resourcePaths = ['materials', 'equipment'];
-  for (const resource of resourcePaths) {
-    const byCode = await fetchData(
-      `${base}/pricebook/v2/tenant/${tid}/${resource}?` +
-      new URLSearchParams({ code: partNo, pageSize: '25', active: 'true' })
-    );
-    if (Array.isArray(byCode) && byCode.length > 0) {
-      const exact = byCode.find(matchesPart);
-      if (exact) {
-        console.log(`[sku-lookup] matched ${resource} by code: id=${exact.id} code="${exact.code}" for partNo="${partNo}"`);
-        return { skuId: exact.id, vendorPartNumber: exact.code || partNo };
-      }
-    }
-  }
+  // ST's pricebook API doesn't actually filter by code/name — it silently
+  // returns the first page regardless. The only reliable lookup is against
+  // a cached full-pricebook map. Cache loads lazily on first lookup.
+  const cache = await loadPricebookCache(token, creds);
 
-  // Strategy 2: scoped scan against this vendor's materials/equipment.
-  // Some ST tenants don't expose code= filter; pagination over vendorId catches
-  // those cases. Up to ~400 items per resource so mid-size books are covered.
-  if (vendorId) {
-    for (const resource of resourcePaths) {
-      let page = 1;
-      while (page <= 4) {
-        const items = await fetchData(
-          `${base}/pricebook/v2/tenant/${tid}/${resource}?` +
-          new URLSearchParams({ vendorId: String(vendorId), pageSize: '100', page: String(page), active: 'true' })
-        );
-        if (!Array.isArray(items) || items.length === 0) break;
-        const match = items.find(matchesPart);
-        if (match) {
-          console.log(`[sku-lookup] matched ${resource} via vendor scan (page ${page}): id=${match.id} for partNo="${partNo}"`);
-          return { skuId: match.id, vendorPartNumber: match.code || partNo };
-        }
-        if (items.length < 100) break;
-        page++;
-      }
-    }
+  const hit = cache.byCode.get(partLower) || cache.byVendorPart.get(partLower);
+  if (hit) {
+    console.log(`[sku-lookup] cache hit (${hit.resource}): id=${hit.skuId} code="${hit.code}" for partNo="${partNo}"`);
+    return { skuId: hit.skuId, vendorPartNumber: hit.code || partNo };
   }
 
   console.log(`[sku-lookup] no SKU in ST pricebook matches partNo="${partNo}" — caller will fall back to default`);
@@ -2780,6 +2806,60 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
 // Visit http://<host>:3002/api/test-st-returns to see what return types
 // exist in your tenant — useful when "Return Type with id X doesn't exists!"
 // errors come back from /returns.
+// Force a reload of the pricebook cache.
+// Usage: hit this after adding new SKUs to ST so the app picks them up
+// without needing a server restart.
+app.get('/api/refresh-sku-cache', async (req, res) => {
+  try {
+    const creds = getSTCreds();
+    if (!creds) return res.status(503).json({ error: 'ST credentials not configured' });
+    const token = await getSTToken(creds);
+    resetSkuCache();
+    const cache = await loadPricebookCache(token, creds);
+    return res.json({
+      ok: true,
+      message: 'Pricebook cache reloaded',
+      total: cache.total,
+      byCodeKeys: cache.byCode.size,
+      byVendorPartKeys: cache.byVendorPart.size
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// View current cache stats and a sample of entries (useful to confirm whether
+// a particular code is in the cache without going through the SKU lookup).
+app.get('/api/sku-cache-stats', async (req, res) => {
+  try {
+    const creds = getSTCreds();
+    if (!creds) return res.status(503).json({ error: 'ST credentials not configured' });
+    const token = await getSTToken(creds);
+    const cache = await loadPricebookCache(token, creds);
+    const search = (req.query.q || '').toString().toLowerCase().trim();
+    const matches = [];
+    if (search) {
+      for (const [key, entry] of cache.byCode) {
+        if (key.includes(search)) matches.push({ key, ...entry });
+        if (matches.length >= 50) break;
+      }
+      for (const [key, entry] of cache.byVendorPart) {
+        if (key.includes(search)) matches.push({ key, viaVendorPart: true, ...entry });
+        if (matches.length >= 50) break;
+      }
+    }
+    return res.json({
+      total: cache.total,
+      byCodeKeys: cache.byCode.size,
+      byVendorPartKeys: cache.byVendorPart.size,
+      hint: 'Pass ?q=<text> to search the cached codes/displayNames/vendorParts',
+      matches
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // Debug: probe ST pricebook for a given vendor part number.
 // Usage: /api/test-st-sku?part=UC24363
 // Returns what each strategy returned + final resolved SKU (or null).
