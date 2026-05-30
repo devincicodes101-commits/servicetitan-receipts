@@ -2558,6 +2558,9 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     const sku = await lookupSTSku(token, creds, vendorId, li.vendorPartNo || li.stPartNo, li.desc);
     const desc = (li.desc || vendor || 'Item').trim();
     return {
+      _matched:         !!sku,
+      _originalPart:    li.vendorPartNo || li.stPartNo || '',
+      _originalDesc:    desc,
       skuId:            sku ? sku.skuId : defaultSkuId,
       vendorPartNumber: sku ? sku.vendorPartNumber : ((li.vendorPartNo || li.stPartNo || 'N/A').trim() || 'N/A'),
       description:      opts.descPrefix ? `${opts.descPrefix} ${desc}`.slice(0, 500) : desc,
@@ -2567,6 +2570,10 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
       cost:             Math.round(absNum(li.unit) * 10000) / 10000
     };
   };
+
+  // Removes our _matched / _originalPart / _originalDesc helper fields before
+  // shipping the item to ST. ST rejects unknown properties.
+  const stripMeta = (items) => items.map(({ _matched, _originalPart, _originalDesc, ...rest }) => rest);
 
   // Helper: post a payload to one of ST's inventory endpoints. Returns parsed
   // JSON or throws with a useful error string.
@@ -2722,7 +2729,7 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
         tax:        0,                       // tax fully allocated to Return Receipt
         shipping:   absNum(shipping),
         memo:       `[CREDIT NOTE — CHARGE PORTION] ${memoBase}${origTotalStr}`,
-        items:      poItems
+        items:      stripMeta(poItems)
       });
       console.log(`[create-po] CREDIT NOTE charge portion | items=${poItems.length}`);
       poItems.forEach((it, i) => console.log(`[create-po]   item[${i}] sku=${it.skuId} vpn=${it.vendorPartNumber} qty=${it.quantity} cost=${it.cost}`));
@@ -2753,7 +2760,7 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
         shipping:            0,
         impactsTechnicianPayroll: false,
         memo:                `[CREDIT NOTE — RETURN PORTION] ${memoBase}${origTotalStr}`,
-        items:               rrItems
+        items:               stripMeta(rrItems)
       };
       if (resolvedJobId) rrBody.jobId = resolvedJobId;
 
@@ -2805,6 +2812,22 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
 
   const items = await Promise.all(rawItems.map(li => buildSTItem(li)));
 
+  // Per client decision: when a line item has no matching SKU in ST's
+  // pricebook, we no longer silently default it to a generic SKU. Block
+  // the post and surface exactly which lines are missing so the user can
+  // either add them in ST or explicitly skip them via Missing Items Review.
+  const unmatchedItems = items.filter(it => !it._matched);
+  if (unmatchedItems.length > 0) {
+    const list = unmatchedItems
+      .map(it => `${it._originalPart || '(no part #)'} — ${(it._originalDesc || '').slice(0, 50)}`)
+      .join('; ');
+    throw new Error(
+      `MISSING_SKUS: ${unmatchedItems.length} line item(s) are not in your ServiceTitan pricebook. ` +
+      `Open "Missing Items Review" to mark them Skip (won't be posted) or add them in ST → Pricebook → Materials and click "Refresh ST cache". ` +
+      `Unmatched: ${list}`
+    );
+  }
+
   const memo = vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined;
 
   const poBody = baseBody({
@@ -2813,7 +2836,7 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     tax:        parseFloat(tax)      || 0,
     shipping:   parseFloat(shipping) || 0,
     memo,
-    items
+    items: stripMeta(items)
   });
 
   console.log(`[create-po] standard | vendor=${vendor} | jobId=${resolvedJobId || 'none'} | items=${items.length} | tax=${poBody.tax} | shipping=${poBody.shipping}`);
