@@ -3056,16 +3056,59 @@ app.post('/api/create-po', async (req, res) => {
     const creds = getSTCreds();
     if (!creds) return res.status(503).json({ error: 'ServiceTitan credentials not configured' });
 
-    const { poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems, total } = req.body || {};
+    const { poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems, total, skipLineIndices } = req.body || {};
 
-    const blocker = validateForServiceTitan({ vendor, jobId, lineItems, total, tax });
+    // Apply per-line skip (Missing Items Review may flag specific lines to drop)
+    let filteredLines = lineItems;
+    const skipSet = new Set((skipLineIndices || []).map(Number));
+    if (skipSet.size > 0 && Array.isArray(lineItems)) {
+      filteredLines = lineItems.filter((_, i) => !skipSet.has(i));
+      console.log(`[create-po] skipping line indices: ${[...skipSet].join(', ')} → ${filteredLines.length} of ${lineItems.length} lines remain`);
+    }
+
+    const blocker = validateForServiceTitan({ vendor, jobId, lineItems: filteredLines, total, tax });
     if (blocker) return res.status(400).json({ error: blocker });
 
-    const result = await createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems, total });
+    const result = await createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, requiredDate, tax, shipping, jobId, lineItems: filteredLines, total });
     return res.json({ success: true, ...result });
   } catch (err) {
     console.error('[create-po] error:', err.message, err.stack);
     return res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// ── Batch SKU-match check for the Missing Items Review section ──
+// Takes a flat list of line items (each tagged with _receiptId and _lineIndex
+// so the frontend can group results back) and returns which match an ST SKU
+// vs. fall back to the default. Single call instead of per-receipt RPC.
+app.post('/api/check-skus', async (req, res) => {
+  try {
+    const creds = getSTCreds();
+    if (!creds) return res.status(503).json({ error: 'ServiceTitan credentials not configured' });
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (items.length === 0) return res.json({ results: [] });
+
+    const token = await getSTToken(creds);
+    // Pre-load the pricebook cache once so every lookupSTSku hits memory.
+    await loadPricebookCache(token, creds);
+
+    const results = [];
+    for (const it of items) {
+      const sku = await lookupSTSku(token, creds, null, it.vendorPartNo || it.stPartNo, it.desc);
+      results.push({
+        _receiptId: it._receiptId,
+        _lineIndex: it._lineIndex,
+        vendorPartNo: it.vendorPartNo || it.stPartNo || '',
+        desc: it.desc || '',
+        matched: !!sku,
+        skuId: sku?.skuId || null,
+        matchedCode: sku?.vendorPartNumber || null
+      });
+    }
+    return res.json({ results });
+  } catch (err) {
+    console.error('[check-skus] error:', err.message);
+    return res.status(500).json({ error: err.message });
   }
 });
 
