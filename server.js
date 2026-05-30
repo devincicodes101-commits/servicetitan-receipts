@@ -2821,11 +2821,21 @@ async function createSTPurchaseOrder({ poNumber, vendor, vendorInvoiceNo, date, 
     const list = unmatchedItems
       .map(it => `${it._originalPart || '(no part #)'} — ${(it._originalDesc || '').slice(0, 50)}`)
       .join('; ');
-    throw new Error(
+    const err = new Error(
       `MISSING_SKUS: ${unmatchedItems.length} line item(s) are not in your ServiceTitan pricebook. ` +
       `Open "Missing Items Review" to mark them Skip (won't be posted) or add them in ST → Pricebook → Materials and click "Refresh ST cache". ` +
       `Unmatched: ${list}`
     );
+    // Structured payload the route handler can pass through to the frontend.
+    // The frontend uses this list directly so Missing Items Review can show
+    // the exact lines that failed, instead of doing a separate scan that
+    // might return inconsistent results vs. the real post attempt.
+    err.unmatched = unmatchedItems.map((it, i) => ({
+      _lineIndex:   items.indexOf(it),
+      vendorPartNo: it._originalPart,
+      desc:         it._originalDesc
+    }));
+    throw err;
   }
 
   const memo = vendorInvoiceNo ? `Vendor Invoice: ${vendorInvoiceNo}` : undefined;
@@ -3096,6 +3106,12 @@ app.post('/api/create-po', async (req, res) => {
     return res.json({ success: true, ...result });
   } catch (err) {
     console.error('[create-po] error:', err.message, err.stack);
+    // Surface the structured unmatched-items list when the post was blocked
+    // by the MISSING_SKUS guard, so the frontend can drive Missing Items
+    // Review from authoritative server data.
+    if (Array.isArray(err.unmatched)) {
+      return res.status(400).json({ error: err.message, unmatched: err.unmatched });
+    }
     return res.status(500).json({ error: err.message || String(err) });
   }
 });

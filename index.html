@@ -829,7 +829,7 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
           </div>
         </div>
         <div class="gmail-page-btns">
-          <button class="btn-ghost" onclick="loadMissingView()">
+          <button class="btn-ghost" onclick="loadMissingView({ rescan: true })">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
             Re-check
           </button>
@@ -1038,6 +1038,19 @@ document.getElementById('historyFilter').addEventListener('change', renderHistor
 // when posting to ST. Keyed by receipt local id. Value: Set of line indices.
 const _skipState = new Map();
 
+// When the server's unmatched payload doesn't include _lineIndex (older
+// posts, manual entries, etc.), look up which line in the receipt matches
+// the (vendorPartNo, desc) pair so the skip checkbox still wires up.
+function findLineIndex(r, u) {
+  if (!Array.isArray(r.lineItems)) return -1;
+  const part = (u.vendorPartNo || '').toLowerCase();
+  const desc = (u.desc || '').toLowerCase();
+  return r.lineItems.findIndex(li =>
+    (li.vendorPartNo || li.stPartNo || '').toLowerCase() === part &&
+    (li.desc || '').toLowerCase() === desc
+  );
+}
+
 function getSkipSet(receiptId) {
   if (!_skipState.has(receiptId)) _skipState.set(receiptId, new Set());
   return _skipState.get(receiptId);
@@ -1069,66 +1082,88 @@ async function refreshSkuCache() {
   }
 }
 
-// Build a flat list of {receiptId, lineIndex, vendorPartNo, desc} from all
-// receipts that haven't been posted yet, send it to /api/check-skus, group
-// the results back by receipt, and render any receipt that has at least one
-// unmatched line.
-async function loadMissingView() {
+// Primary source of "what's missing" is the structured payload the server
+// returns when a /api/create-po post is blocked by the MISSING_SKUS guard.
+// That data is stored on r._unmatchedFromPost and shown here directly so
+// the section always matches what the post attempt actually saw.
+//
+// Optional second source: a proactive scan triggered by the "Re-check"
+// button (loadMissingView({ rescan: true })) which calls /api/check-skus
+// to surface unmatched items across all pending receipts even before the
+// user has tried to post them.
+async function loadMissingView(opts = {}) {
   const container = document.getElementById('missingItemsList');
   if (!container) return;
-  container.innerHTML = '<div class="empty-state"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="animation:spin 1s linear infinite"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg><p style="margin-top:10px">Checking SKUs against ServiceTitan…</p></div>';
 
-  // Candidate receipts = anything not yet posted that has line items
-  const candidates = receipts.filter(r =>
-    r.status !== 'pushed' &&
-    Array.isArray(r.lineItems) && r.lineItems.length > 0
-  );
-
-  if (candidates.length === 0) {
-    container.innerHTML = '<div class="empty-state"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="20 6 9 17 4 12"/></svg><p>No pending receipts to check.</p></div>';
-    updateMissingCountBadge(0);
-    return;
-  }
-
-  // Flatten to single payload
-  const items = [];
-  candidates.forEach(r => {
-    r.lineItems.forEach((li, i) => {
-      items.push({
+  // Pull whatever the post attempts have already flagged onto receipts.
+  const byReceipt = new Map();
+  receipts.forEach(r => {
+    if (r.status === 'pushed') return;
+    if (Array.isArray(r._unmatchedFromPost) && r._unmatchedFromPost.length > 0) {
+      byReceipt.set(r.id, r._unmatchedFromPost.map((u, idx) => ({
         _receiptId: r.id,
-        _lineIndex: i,
-        vendorPartNo: li.vendorPartNo || li.stPartNo || '',
-        desc: li.desc || ''
+        _lineIndex: u._lineIndex != null ? u._lineIndex : findLineIndex(r, u),
+        vendorPartNo: u.vendorPartNo || '',
+        desc: u.desc || ''
+      })));
+    }
+  });
+
+  // If the user explicitly asked to Re-check, run the batch scan and merge
+  // its results in (overwriting the stored data for receipts we re-check).
+  if (opts.rescan) {
+    container.innerHTML = '<div class="empty-state"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="animation:spin 1s linear infinite"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg><p style="margin-top:10px">Re-checking all pending receipts against ServiceTitan…</p></div>';
+    const candidates = receipts.filter(r =>
+      r.status !== 'pushed' && Array.isArray(r.lineItems) && r.lineItems.length > 0
+    );
+    const items = [];
+    candidates.forEach(r => {
+      r.lineItems.forEach((li, i) => {
+        items.push({
+          _receiptId: r.id, _lineIndex: i,
+          vendorPartNo: li.vendorPartNo || li.stPartNo || '',
+          desc: li.desc || ''
+        });
       });
     });
-  });
-
-  let results = [];
-  try {
-    const res  = await fetch('/api/check-skus', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items })
-    });
-    const json = await res.json();
-    results = json.results || [];
-  } catch (e) {
-    container.innerHTML = `<div class="empty-state"><p style="color:#b00020">Check failed: ${e.message}</p></div>`;
-    return;
+    try {
+      const res  = await fetch('/api/check-skus', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items })
+      });
+      const json = await res.json();
+      const fresh = new Map();
+      (json.results || []).forEach(r => {
+        if (r.matched) return;
+        if (!fresh.has(r._receiptId)) fresh.set(r._receiptId, []);
+        fresh.get(r._receiptId).push(r);
+      });
+      // Replace the stored data with fresh scan results
+      candidates.forEach(r => {
+        if (fresh.has(r.id)) {
+          r._unmatchedFromPost = fresh.get(r.id).map(u => ({
+            _lineIndex: u._lineIndex,
+            vendorPartNo: u.vendorPartNo,
+            desc: u.desc
+          }));
+          byReceipt.set(r.id, fresh.get(r.id));
+        } else {
+          // No unmatched on this rescan — clear any stale stored data
+          delete r._unmatchedFromPost;
+          byReceipt.delete(r.id);
+        }
+      });
+    } catch (e) {
+      container.innerHTML = `<div class="empty-state"><p style="color:#b00020">Re-check failed: ${e.message}</p></div>`;
+      return;
+    }
   }
-
-  // Group unmatched results by receipt
-  const byReceipt = new Map();
-  results.forEach(r => {
-    if (r.matched) return;
-    if (!byReceipt.has(r._receiptId)) byReceipt.set(r._receiptId, []);
-    byReceipt.get(r._receiptId).push(r);
-  });
 
   updateMissingCountBadge(byReceipt.size);
 
   if (byReceipt.size === 0) {
-    container.innerHTML = '<div class="empty-state"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="20 6 9 17 4 12"/></svg><p>All line items match an ST SKU. Nothing to review.</p></div>';
+    container.innerHTML = '<div class="empty-state"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="20 6 9 17 4 12"/></svg><p>No receipts need review.<br><span style="font-size:12px;color:var(--ink-mute)">Receipts appear here automatically when a post is blocked by missing SKUs. Click <strong>Re-check</strong> to scan all pending receipts proactively.</span></p></div>';
     return;
   }
 
@@ -1969,10 +2004,20 @@ async function postToST(id) {
         alert('ServiceTitan credentials not configured. Add ST_* vars to .env on VPS.');
       } else if (/^MISSING_SKUS/.test(errMsg)) {
         // Server refused because some line items aren't in the ST pricebook.
-        // Route the user to Missing Items Review where they can decide what
-        // to do with each unmatched line (skip, or add to ST + refresh).
+        // Persist the exact unmatched list (from the server) onto the receipt
+        // so Missing Items Review can show the same items the post complained
+        // about, instead of doing a separate scan that might give a different
+        // answer.
+        if (Array.isArray(json.unmatched)) {
+          r._unmatchedFromPost = json.unmatched;
+          r._missingReviewedAt = Date.now();
+          const flaggedCount = receipts.filter(x =>
+            x.status !== 'pushed' && Array.isArray(x._unmatchedFromPost) && x._unmatchedFromPost.length > 0
+          ).length;
+          updateMissingCountBadge(flaggedCount);
+        }
         const goReview = confirm(
-          'This receipt has line items that are not in your ServiceTitan pricebook.\n\n' +
+          `This receipt has ${(json.unmatched || []).length || 'some'} line item(s) that are not in your ServiceTitan pricebook.\n\n` +
           'Per your client\'s rule, the system will NOT silently default these to a generic SKU. ' +
           'Open "Missing Items Review" to decide for each item (skip, or add it in ST first)?'
         );
