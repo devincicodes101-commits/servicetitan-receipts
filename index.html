@@ -494,6 +494,11 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
     Receipts
     <span class="count" id="navReviewCount"></span>
   </div>
+  <div class="nav-item" data-view="missing">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    Missing Items
+    <span class="count" id="navMissingCount"></span>
+  </div>
   <div class="nav-item" data-view="gmail">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
     Gmail Receipts
@@ -810,6 +815,40 @@ body { background: radial-gradient(ellipse at top left, rgba(255,90,43,.06), tra
   </div>
 
 
+  <!-- VIEW: MISSING ITEMS REVIEW -->
+  <div class="view" id="view-missing" style="padding:0">
+    <div class="gmail-page">
+      <div class="gmail-page-head">
+        <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0">
+          <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Open menu">
+            <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          </button>
+          <div>
+            <div class="gmail-page-title">Missing <em>Items Review</em></div>
+            <div class="gmail-page-sub">Receipts with line items that don't match a SKU in ServiceTitan's pricebook. Unmatched lines will post under the generic default SKU unless you skip them.</div>
+          </div>
+        </div>
+        <div class="gmail-page-btns">
+          <button class="btn-ghost" onclick="loadMissingView()">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            Re-check
+          </button>
+          <button class="btn-ghost" onclick="refreshSkuCache()" id="missingRefreshCacheBtn" title="Hit this after adding new SKUs to ServiceTitan">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
+            Refresh ST cache
+          </button>
+        </div>
+      </div>
+
+      <div id="missingItemsList" style="display:flex;flex-direction:column;gap:14px;padding:0 4px;">
+        <div class="empty-state">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="20 6 9 17 4 12"/></svg>
+          <p>Loading…</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- VIEW: SETTINGS placeholder -->
   <div class="view" id="view-settings">
     <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Open menu" style="margin-bottom:8px">
@@ -939,6 +978,7 @@ function navigate(viewId) {
   if (viewId === 'review')  renderReviewList();
   if (viewId === 'history') renderHistoryList();
   if (viewId === 'gmail')   loadGmailView();
+  if (viewId === 'missing') loadMissingView();
 
   // Reset triview to list panel and close sidebar on navigation
   resetTriPanel();
@@ -993,6 +1033,206 @@ document.getElementById('historyFilter').addEventListener('change', renderHistor
 // ============================================================
 // GMAIL RECEIPTS VIEW
 // ============================================================
+// ── Missing Items Review section ─────────────────────────────────────
+// Per-receipt, per-line state of which lines the user has elected to skip
+// when posting to ST. Keyed by receipt local id. Value: Set of line indices.
+const _skipState = new Map();
+
+function getSkipSet(receiptId) {
+  if (!_skipState.has(receiptId)) _skipState.set(receiptId, new Set());
+  return _skipState.get(receiptId);
+}
+
+function toggleSkipLine(receiptId, lineIndex) {
+  const set = getSkipSet(receiptId);
+  if (set.has(lineIndex)) set.delete(lineIndex);
+  else set.add(lineIndex);
+  loadMissingView();
+}
+
+async function refreshSkuCache() {
+  const btn = document.getElementById('missingRefreshCacheBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Refreshing…'; }
+  try {
+    const res  = await fetch('/api/refresh-sku-cache');
+    const json = await res.json();
+    if (json.ok) {
+      alert(`Pricebook cache reloaded: ${json.total} items (codes: ${json.byCodeKeys})`);
+      await loadMissingView();
+    } else {
+      alert('Refresh failed: ' + (json.error || 'unknown'));
+    }
+  } catch (e) {
+    alert('Refresh failed: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg> Refresh ST cache'; }
+  }
+}
+
+// Build a flat list of {receiptId, lineIndex, vendorPartNo, desc} from all
+// receipts that haven't been posted yet, send it to /api/check-skus, group
+// the results back by receipt, and render any receipt that has at least one
+// unmatched line.
+async function loadMissingView() {
+  const container = document.getElementById('missingItemsList');
+  if (!container) return;
+  container.innerHTML = '<div class="empty-state"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="animation:spin 1s linear infinite"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg><p style="margin-top:10px">Checking SKUs against ServiceTitan…</p></div>';
+
+  // Candidate receipts = anything not yet posted that has line items
+  const candidates = receipts.filter(r =>
+    r.status !== 'pushed' &&
+    Array.isArray(r.lineItems) && r.lineItems.length > 0
+  );
+
+  if (candidates.length === 0) {
+    container.innerHTML = '<div class="empty-state"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="20 6 9 17 4 12"/></svg><p>No pending receipts to check.</p></div>';
+    updateMissingCountBadge(0);
+    return;
+  }
+
+  // Flatten to single payload
+  const items = [];
+  candidates.forEach(r => {
+    r.lineItems.forEach((li, i) => {
+      items.push({
+        _receiptId: r.id,
+        _lineIndex: i,
+        vendorPartNo: li.vendorPartNo || li.stPartNo || '',
+        desc: li.desc || ''
+      });
+    });
+  });
+
+  let results = [];
+  try {
+    const res  = await fetch('/api/check-skus', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items })
+    });
+    const json = await res.json();
+    results = json.results || [];
+  } catch (e) {
+    container.innerHTML = `<div class="empty-state"><p style="color:#b00020">Check failed: ${e.message}</p></div>`;
+    return;
+  }
+
+  // Group unmatched results by receipt
+  const byReceipt = new Map();
+  results.forEach(r => {
+    if (r.matched) return;
+    if (!byReceipt.has(r._receiptId)) byReceipt.set(r._receiptId, []);
+    byReceipt.get(r._receiptId).push(r);
+  });
+
+  updateMissingCountBadge(byReceipt.size);
+
+  if (byReceipt.size === 0) {
+    container.innerHTML = '<div class="empty-state"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="20 6 9 17 4 12"/></svg><p>All line items match an ST SKU. Nothing to review.</p></div>';
+    return;
+  }
+
+  // Render one card per flagged receipt
+  const cards = [];
+  for (const [receiptId, unmatched] of byReceipt) {
+    const r = receipts.find(x => x.id === receiptId);
+    if (!r) continue;
+    const skipSet = getSkipSet(receiptId);
+    const totalLines = r.lineItems.length;
+    const matchedCount = totalLines - unmatched.length;
+
+    const lineRows = unmatched.map(u => {
+      const skipped = skipSet.has(u._lineIndex);
+      return `
+        <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:${skipped ? 'rgba(255,200,200,.3)' : 'var(--bg-2)'};border-radius:10px;border:1px solid var(--line);transition:background .15s;">
+          <div style="flex:1;min-width:0;">
+            <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:${skipped ? 'var(--ink-mute)' : 'var(--ink)'};text-decoration:${skipped ? 'line-through' : 'none'}">${u.vendorPartNo || '(no part #)'}</div>
+            <div style="font-size:12px;color:var(--ink-soft);margin-top:2px;${skipped ? 'text-decoration:line-through;color:var(--ink-mute)' : ''}">${(u.desc || '(no description)').slice(0, 80)}</div>
+          </div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-soft);cursor:pointer;flex-shrink:0;">
+            <input type="checkbox" ${skipped ? 'checked' : ''} onchange="toggleSkipLine('${receiptId}', ${u._lineIndex})" style="cursor:pointer">
+            Skip this line
+          </label>
+        </div>
+      `;
+    }).join('');
+
+    cards.push(`
+      <div style="background:var(--card-2);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:var(--shadow-sm);">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;gap:12px;">
+          <div style="min-width:0;">
+            <div style="font-family:'Fraunces',serif;font-size:18px;font-weight:500;">${r.name || 'Receipt'}</div>
+            <div style="font-size:12px;color:var(--ink-mute);margin-top:2px;">${r.vendor || '(vendor not set)'} · Job #${r.jobId || 'n/a'} · ${matchedCount}/${totalLines} items matched · ${unmatched.length - skipSet.size} will use Generic Material</div>
+          </div>
+          <button class="btn-primary" onclick="postFromMissingReview('${receiptId}')" style="white-space:nowrap;">
+            Post to ServiceTitan →
+          </button>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px;">
+          ${lineRows}
+        </div>
+        <div style="font-size:12px;color:var(--ink-mute);margin-top:12px;border-top:1px solid var(--line);padding-top:10px;">
+          💡 Items not in your ST pricebook? Add them in <strong>ServiceTitan → Pricebook → Materials</strong>, then click <strong>Refresh ST cache</strong> at the top.
+        </div>
+      </div>
+    `);
+  }
+  container.innerHTML = cards.join('');
+}
+
+function updateMissingCountBadge(n) {
+  const el = document.getElementById('navMissingCount');
+  if (!el) return;
+  el.textContent = n > 0 ? String(n) : '';
+  el.style.background = n > 0 ? 'rgba(255,170,40,.2)' : '';
+  el.style.color = n > 0 ? '#9a6300' : '';
+}
+
+async function postFromMissingReview(receiptId) {
+  const r = receipts.find(x => x.id === receiptId);
+  if (!r) return;
+  const skipSet = getSkipSet(receiptId);
+  const skipLineIndices = [...skipSet];
+
+  if (!confirm(`Post to ServiceTitan?\n\n${r.lineItems.length - skipLineIndices.length} of ${r.lineItems.length} lines will be sent.${skipLineIndices.length ? ` (${skipLineIndices.length} skipped)` : ''}\nUnmatched lines will use the Generic Material SKU.`)) return;
+
+  try {
+    const res = await fetch('/api/create-po', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        poNumber:        r.poNumber,
+        vendor:          r.vendor,
+        vendorInvoiceNo: r.vendorInvoiceNo,
+        date:            r.invoiceDate,
+        requiredDate:    r.requiredDate,
+        tax:             r.tax,
+        shipping:        r.shipping,
+        jobId:           r.jobId,
+        total:           r.amount,
+        lineItems:       r.lineItems,
+        skipLineIndices
+      })
+    });
+    const json = await res.json();
+    if (!res.ok) { alert(json.error || 'Unknown error'); return; }
+    r.status = 'pushed';
+    r.stPurchaseOrderId = json.poId ? String(json.poId) : null;
+    _skipState.delete(receiptId);
+    if (r.dbId) {
+      fetch('/api/receipt-status', { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: r.dbId, status: 'pushed', stPurchaseOrderId: r.stPurchaseOrderId }) }).catch(() => {});
+    }
+    alert('Posted to ServiceTitan ✓');
+    await loadMissingView();
+    renderReviewList();
+    renderHistoryList();
+    updateStats();
+  } catch (e) {
+    alert('Network error: ' + e.message);
+  }
+}
+
 async function loadGmailView() {
   try {
     const res = await fetch('/api/gmail-receipts');
