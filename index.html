@@ -1141,10 +1141,18 @@ async function loadMissingView() {
     const totalLines = r.lineItems.length;
     const matchedCount = totalLines - unmatched.length;
 
+    const unresolvedCount = unmatched.filter(u => !skipSet.has(u._lineIndex)).length;
+    const allHandled = unresolvedCount === 0;
+
     const lineRows = unmatched.map(u => {
       const skipped = skipSet.has(u._lineIndex);
+      const rowBg     = skipped ? 'rgba(180,180,180,.12)' : 'rgba(220,38,38,.06)';
+      const rowBorder = skipped ? 'var(--line)'           : 'rgba(220,38,38,.35)';
+      const badgeBg   = skipped ? 'var(--ink-mute)'       : '#dc2626';
+      const badgeText = skipped ? 'WILL SKIP'             : 'NOT IN ST';
       return `
-        <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:${skipped ? 'rgba(255,200,200,.3)' : 'var(--bg-2)'};border-radius:10px;border:1px solid var(--line);transition:background .15s;">
+        <div style="display:flex;align-items:center;gap:12px;padding:12px 14px;background:${rowBg};border-radius:10px;border:1px solid ${rowBorder};transition:all .15s;">
+          <span style="display:inline-block;background:${badgeBg};color:white;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.05em;padding:3px 7px;border-radius:4px;flex-shrink:0;">${badgeText}</span>
           <div style="flex:1;min-width:0;">
             <div style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:${skipped ? 'var(--ink-mute)' : 'var(--ink)'};text-decoration:${skipped ? 'line-through' : 'none'}">${u.vendorPartNo || '(no part #)'}</div>
             <div style="font-size:12px;color:var(--ink-soft);margin-top:2px;${skipped ? 'text-decoration:line-through;color:var(--ink-mute)' : ''}">${(u.desc || '(no description)').slice(0, 80)}</div>
@@ -1157,22 +1165,32 @@ async function loadMissingView() {
       `;
     }).join('');
 
+    const summaryColor = allHandled ? 'var(--green)' : '#dc2626';
+    const summaryText  = allHandled
+      ? `${matchedCount}/${totalLines} matched, ${skipSet.size} will skip — ready to post`
+      : `${matchedCount}/${totalLines} matched, ${unresolvedCount} item(s) need a decision before posting`;
+
+    const buttonHtml = allHandled
+      ? `<button class="btn-primary" onclick="postFromMissingReview('${receiptId}')" style="white-space:nowrap;">Post to ServiceTitan →</button>`
+      : `<button class="btn-primary" disabled style="white-space:nowrap;opacity:.4;cursor:not-allowed;" title="Mark every unmatched line as Skip, or add it to ST and refresh the cache.">Post to ServiceTitan →</button>`;
+
     cards.push(`
       <div style="background:var(--card-2);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:var(--shadow-sm);">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;gap:12px;">
           <div style="min-width:0;">
             <div style="font-family:'Fraunces',serif;font-size:18px;font-weight:500;">${r.name || 'Receipt'}</div>
-            <div style="font-size:12px;color:var(--ink-mute);margin-top:2px;">${r.vendor || '(vendor not set)'} · Job #${r.jobId || 'n/a'} · ${matchedCount}/${totalLines} items matched · ${unmatched.length - skipSet.size} will use Generic Material</div>
+            <div style="font-size:12px;color:var(--ink-mute);margin-top:2px;">${r.vendor || '(vendor not set)'} · Job #${r.jobId || 'n/a'}</div>
+            <div style="font-size:12px;color:${summaryColor};margin-top:4px;font-weight:600;">${summaryText}</div>
           </div>
-          <button class="btn-primary" onclick="postFromMissingReview('${receiptId}')" style="white-space:nowrap;">
-            Post to ServiceTitan →
-          </button>
+          ${buttonHtml}
         </div>
         <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px;">
           ${lineRows}
         </div>
-        <div style="font-size:12px;color:var(--ink-mute);margin-top:12px;border-top:1px solid var(--line);padding-top:10px;">
-          💡 Items not in your ST pricebook? Add them in <strong>ServiceTitan → Pricebook → Materials</strong>, then click <strong>Refresh ST cache</strong> at the top.
+        <div style="font-size:12px;color:var(--ink-mute);margin-top:12px;border-top:1px solid var(--line);padding-top:10px;line-height:1.5;">
+          For each <strong style="color:#dc2626">NOT IN ST</strong> line you have two options:<br>
+          1. <strong>Skip this line</strong> — that item won't be sent on the PO at all.<br>
+          2. Add it in <strong>ServiceTitan → Pricebook → Materials</strong> with the exact part number, then click <strong>Refresh ST cache</strong> at the top — the line will match on the next re-check.
         </div>
       </div>
     `);
@@ -1194,7 +1212,7 @@ async function postFromMissingReview(receiptId) {
   const skipSet = getSkipSet(receiptId);
   const skipLineIndices = [...skipSet];
 
-  if (!confirm(`Post to ServiceTitan?\n\n${r.lineItems.length - skipLineIndices.length} of ${r.lineItems.length} lines will be sent.${skipLineIndices.length ? ` (${skipLineIndices.length} skipped)` : ''}\nUnmatched lines will use the Generic Material SKU.`)) return;
+  if (!confirm(`Post to ServiceTitan?\n\n${r.lineItems.length - skipLineIndices.length} of ${r.lineItems.length} lines will be sent.${skipLineIndices.length ? ` (${skipLineIndices.length} skipped — those won't be on the ST PO)` : ''}`)) return;
 
   try {
     const res = await fetch('/api/create-po', {
@@ -1946,10 +1964,21 @@ async function postToST(id) {
     const json = await res.json();
 
     if (!res.ok || json.error) {
+      const errMsg = json.error || 'Unknown error';
       if (res.status === 503) {
         alert('ServiceTitan credentials not configured. Add ST_* vars to .env on VPS.');
+      } else if (/^MISSING_SKUS/.test(errMsg)) {
+        // Server refused because some line items aren't in the ST pricebook.
+        // Route the user to Missing Items Review where they can decide what
+        // to do with each unmatched line (skip, or add to ST + refresh).
+        const goReview = confirm(
+          'This receipt has line items that are not in your ServiceTitan pricebook.\n\n' +
+          'Per your client\'s rule, the system will NOT silently default these to a generic SKU. ' +
+          'Open "Missing Items Review" to decide for each item (skip, or add it in ST first)?'
+        );
+        if (goReview) navigate('missing');
       } else {
-        alert(json.error || 'Unknown error');
+        alert(errMsg);
       }
       postBtn.textContent = 'Post to ServiceTitan';
       postBtn.disabled = false;
