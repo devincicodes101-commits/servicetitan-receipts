@@ -769,7 +769,8 @@ app.use(async (req, res, next) => {
     '/api/test-st-returns',
     '/api/test-st-sku',
     '/api/refresh-sku-cache',
-    '/api/sku-cache-stats'
+    '/api/sku-cache-stats',
+    '/api/dashboard-explore'
   ];
 
   if (!req.path.startsWith('/api/') || open.includes(req.path) || req.path.startsWith('/api/incoming-status/')) return next();
