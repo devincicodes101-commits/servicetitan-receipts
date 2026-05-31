@@ -1816,6 +1816,41 @@ app.post('/api/extract-url', async (req, res) => {
   }
 });
 
+// ── Dashboard exploration endpoint ──
+app.get('/api/dashboard-explore', async (req, res) => {
+  try {
+    const [quotesRes, requestsRes, clientsRes] = await Promise.all([
+      jobberGQL(`query {
+        quotes(first: 5) {
+          nodes {
+            id quoteNumber status createdAt
+            amounts { total }
+            client { id name }
+            assignedTo { id name }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }`),
+      jobberGQL(`query {
+        requests(first: 5) {
+          nodes { id createdAt client { id name } }
+          pageInfo { hasNextPage endCursor }
+        }
+      }`),
+      jobberGQL(`query {
+        clients(first: 5) {
+          nodes { id createdAt firstName lastName }
+          pageInfo { hasNextPage endCursor }
+        }
+      }`)
+    ]);
+
+    res.json({ quotes: quotesRes, requests: requestsRes, clients: clientsRes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Jobber debug endpoint (visit /api/jobber-debug?job=1249 in browser) ──
 app.get('/api/jobber-debug', async (req, res) => {
   try {
